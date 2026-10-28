@@ -296,6 +296,7 @@ async function reconnectAccount(acc) {
   delete monitor[acc.name];
   buildMonitor(acc.name).catch(() => {});
 }
+const lastGroqAlert = {};
 const pingFails = {};
 function startHealthCheck() {
   setInterval(async () => {
@@ -445,19 +446,33 @@ async function respond(info) {
   if (!info.isDm && Number(P(acc, "markRead")) && info.target?.id) { try { await client.markAsRead(info.peer, info.target.id, { clearMentions: true }); } catch (_) {} }
   if (!info.isDm && st.sent.length >= Number(P(acc, "maxPerHour"))) { console.log(`engine[${accName}]: ${short(info.title, 20)} နာရီကန့်သတ်ပြည့် — ကျော်`); return; }
 
+  const tStart = Date.now();
+  console.log(`engine[${accName}]: ${info.isDm ? "DM" : short(info.title, 20)} — Groq ကို မေးနေသည် (key ${keyCandidates(acc).length} ခု)`);
   const messages = info.isDm ? buildDmMessages(acc, st, me.name) : buildGroupMessages(acc, st, info.title, info.target, info.direct, me.name);
   const r = await callGroq(acc, messages);
-  if (r.error) { console.error(`groq[${accName}]: ${r.error}`); if (r.error !== "NO_KEY") incStat(accName, "failed"); return; }
-  if (!info.isDm && !info.direct && isSkip(r.text)) return;
+  if (r.error) {
+    console.error(`groq[${accName}]: ${r.error}`);
+    if (r.error !== "NO_KEY") {
+      incStat(accName, "failed");
+      if (Date.now() - (lastGroqAlert[accName] || 0) > 60000) { // admin ကို တစ်မိနစ်တစ်ခါပဲ သိစေ
+        lastGroqAlert[accName] = Date.now();
+        notify(`⚠️ [${accName}] Groq က မဖြေနိုင်ဘူး — ${short(r.error, 150)}\n(🩺 Diagnose နှိပ်ပြီး စစ်ကြည့်ပါ)`).catch(() => {});
+      }
+    }
+    return;
+  }
+  console.log(`engine[${accName}]: Groq ဖြေပြီး ${Date.now() - tStart}ms — ${short(r.text, 60)}`);
+  if (!info.isDm && !info.direct && isSkip(r.text)) { console.log(`engine[${accName}]: AI က SKIP ရွေး`); return; }
   const reply = cleanReply(r.text, !!Number(P(acc, "stripPunct")), [me.name, "Me", "me"]);
-  if (!reply || isSkip(reply)) return;
+  if (!reply || isSkip(reply)) { console.log(`engine[${accName}]: ပြန်စာ ဗလာ/SKIP ဖြစ်နေလို့ မပို့`); return; }
 
   try { await client.invoke(new Api.messages.SetTyping({ peer: info.peer, action: new Api.SendMessageTypingAction() })); } catch (_) {}
   await sleep(info.isDm ? Math.min(900, 200 + reply.length * 15) : Math.min(3500, 400 + reply.length * 45));
 
   const quote = !info.isDm && (info.direct || Math.random() * 100 < Number(P(acc, "quoteChance")));
   try {
-    const sent = await client.sendMessage(info.peer, { message: reply, ...(quote ? { replyTo: info.target.id } : {}) });
+    const sent = await withTimeout(client.sendMessage(info.peer, { message: reply, ...(quote ? { replyTo: info.target.id } : {}) }), 30000, "SEND_TIMEOUT");
+    console.log(`engine[${accName}]: ✅ ပို့ပြီး (${short(reply, 40)})`);
     st.fails = 0; st.lastOwn = Date.now(); st.sent.push(Date.now());
     if (sent?.id) st.ownMsgIds.add(sent.id);
     pushBuf(st, { id: sent?.id, name: me.name, text: reply, own: true, ts: Date.now() }, Number(P(acc, "historySize")));
@@ -511,6 +526,7 @@ async function showHome(ctx, note) {
     [btn("⚙️ Default Settings", "g:params"), btn("🧠 Model", "g:model")],
     [btn(S.notifyOn ? "🔔 Noti ပိတ်မယ်" : "🔕 Noti ဖွင့်မယ်", "g:noti")],
     [btn("▶️ အကုန် Start", "g:startall"), btn("⏹ အကုန် Stop", "g:stopall")],
+    [btn("🩺 Diagnose (စစ်ဆေး)", "g:diag")],
   ];
   return render(ctx, t, rows);
 }
@@ -611,6 +627,25 @@ bot.on("callback_query", async (ctx) => {
 
 async function globalRoute(ctx, [act, arg, arg2]) {
   switch (act) {
+    case "diag": {
+      await render(ctx, "🩺 စစ်ဆေးနေသည်… (၁ မိနစ်ခန့်ကြာနိုင်)", []);
+      let t = `🩺 Diagnose\n🧠 Model: ${S.model}\n`;
+      for (const a of await getAccounts()) {
+        t += `\n👤 ${a.name} — ${a.active ? "💬 chat ဖွင့်" : "⏹ ရပ်ထား"}`;
+        const c = clientPool[a.name];
+        if (!c) { t += "\n  🔴 Telegram မချိတ်ဘူး (Reconnect နှိပ်ပါ)"; continue; }
+        let t0 = Date.now();
+        try { await withTimeout(c.getMe(), 15000, "timeout"); t += `\n  🟢 Telegram ဖြေ ${Date.now() - t0}ms`; } catch (e) { t += `\n  🔴 Telegram မဖြေ (${e.message})`; }
+        const cands = keyCandidates(a);
+        t += `\n  🔑 သုံးလို့ရတဲ့ key ${cands.length} ခု`;
+        if (cands.length) {
+          t0 = Date.now();
+          const r = await callGroq(a, [{ role: "user", content: "Say hi in one short word." }]);
+          t += r.error ? `\n  🔴 Groq error: ${short(r.error, 160)}` : `\n  🟢 Groq ဖြေ ${Date.now() - t0}ms — "${short(r.text, 30)}"`;
+        }
+      }
+      return render(ctx, t, [[btn("🔁 ထပ်စစ်", "g:diag")], [btn("⬅️ Home", "home")]]);
+    }
     case "noti": await saveSettings({ notifyOn: !S.notifyOn }); return showHome(ctx);
     case "startall": await doStartAll(true); return showHome(ctx, "▶️ အကုန် Start လုပ်ပြီး");
     case "stopall": await doStartAll(false); return showHome(ctx, "⏹ အကုန် Stop လုပ်ပြီး");
