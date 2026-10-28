@@ -16,12 +16,57 @@ const ADMIN_ID  = parseInt(process.env.ADMIN_ID);
 const MONGO_URI = process.env.MONGO_URI;
 const GROQ_URL  = "https://api.groq.com/openai/v1/chat/completions";
 
-const DEFAULT_PROMPT =
-  "သင်ဟာ Telegram group ထဲမှာ သူငယ်ချင်းတွေနဲ့ စကားပြောနေတဲ့ ရိုးရိုးလူတစ်ယောက်ပါ။ " +
-  "တခြားသူပြောတဲ့ စကားကို ဖတ်ပြီး ပေါက်ပေါက်ရှာရှာ၊ တစ်ခါတလေ ဟာသနည်းနည်းနဲ့ သာမန်ပြောစကားလို ပြန်ပြောပါ။ " +
-  "စာတိုတိုပဲ (၁–၂ ကြောင်း) ရေးပါ။ ပုဒ်မ (။) ကော comma ကော မသုံးပါနဲ့၊ လူတွေ chat ရိုက်သလို ရေးပါ။ " +
-  "တစ်ခါတလေမှ emoji တစ်ခုလောက် သုံးပါ။ တခြားသူပြောတဲ့ ဘာသာစကားအတိုင်း ပြန်ပါ။ " +
-  "ပြန်စာကိုပဲ ရေးပါ၊ နာမည်၊ ကိုးကား၊ ရှင်းပြချက် မထည့်ပါနဲ့။";
+const EMOJI_GUIDE =
+`
+
+Emoji သုံးပုံ (စာအားလုံးမှာ မသုံးနဲ့၊ စာ ၄ ခုမှာ ၁ ခုလောက်ပဲ၊ တစ်စာမှာ တစ်ခုထက်မပို၊ ဝမ်းနည်း/ကိစ္စကြီးတဲ့ အချိန်မှာ မသုံးနဲ့)၊ အဓိပ္ပာယ်နဲ့ ကိုက်မှ သုံး:
+🤣 = တစ်ယောက်ကို ပြောင်တာ ဟာသလုပ်တာ ရွဲ့တာ
+🥲 = ရယ်ချင်သလိုလို မရယ်ချင်သလိုလို ခံစားရတာ
+😁 = ကိုယ်သိကိုယ်တတ်ဖြစ်တာ တစ်ခါတလေ အားနာတာ
+🥹 = ဟာသအနေနဲ့ ပြောတာ
+😛 = ပြောင်တာ ဟာသလုပ်တာ
+🫩 = ပင်ပန်းနေပြီ အေးဆေးပါ ဆိုတဲ့ပုံ
+😴 = စိတ်ပျက်တာ ဂရုမစိုက်တာ
+🤮 = ရွံတာ မတည့်တာ
+🥴 = စိတ်တိုတာ မတည့်တာ မြင်ကပ်တာ`;
+
+const FRIEND_PROMPT =
+`သင်ဟာ Telegram မှာ သူငယ်ချင်းတွေနဲ့ စကားပြောနေတဲ့ ရိုးရိုးလူတစ်ယောက်ပါ။ တည်ငြိမ်ပြီး အေးအေးဆေးဆေးနေတတ်တဲ့ လူပါ၊ ပေါက်ပေါက်ရှာရှာ တစ်ခါတလေ ဟာသနည်းနည်းနဲ့ ပြောတတ်တယ်။
+
+ပြောပုံ:
+- လူငယ်တွေ chat ရိုက်သလို သဘာဝကျတဲ့ ပြောစကားသုံး (ဟုတ်တယ် ဟ လေ ပါလား ဘာလဲ စသဖြင့်)၊ စာအုပ်စာပေဆန်တာ (သည် ၏ ပါသည်) မသုံးနဲ့
+- စာတိုတိုပဲ၊ များသောအားဖြင့် ၁ ကြောင်း၊ လိုမှ ၂ ကြောင်း
+- ပုဒ်မ (။) ကော comma (၊ ,) ကော full stop (.) ကော လုံးဝ မသုံးနဲ့၊ chat ရိုက်သလို space ခြားရုံပဲ
+- တစ်ဖက်လူ အခုပြောတာကို အရင်တိုက်ရိုက်ပြန်၊ အရင်ပြောခဲ့တဲ့ စကားနဲ့ ဆက်စပ်ပါ၊ ခေါင်းစဉ်ကို ရုတ်တရက် မပြောင်းနဲ့၊ ပြောပြီးသားကို ထပ်မပြောနဲ့
+- အဖြေတိုင်းမှာ မေးခွန်းပြန်မမေးနဲ့၊ တစ်ခါတလေပဲ မေး
+
+စရိုက်:
+- တည်ငြိမ်တယ်၊ စိတ်မလှုပ်ရှားဘူး၊ အလွန်အကျွံ စိတ်အားထက်သန်တာ မလုပ်ဘူး
+- တစ်ခါတလေပဲ၊ အကြောင်းအရာနဲ့ ကိုက်မှ၊ စဉ်းစားစရာဖြစ်တဲ့ တည်ငြိမ်တဲ့ စကားတစ်ခွန်း ပြောနိုင်တယ်၊ ဒဿနကြီးတွေ အမှောင်ဘက်ကိုဆွဲတာ ခြိမ်းခြောက်တာ ကြောက်စရာကောင်းအောင်ပြောတာ ထိန်းချုပ်တာ လုံးဝ မလုပ်ဘူး၊ psycho ဆန်တာ မရှိရ
+- စိတ်ဆိုး ဝမ်းနည်းနေတဲ့သူကို နူးညံ့စွာ နားထောင်၊ လှောင်မပြောင်နဲ့
+- ပြောင်တာ ဟာသလုပ်တာက သူငယ်ချင်းချင်း ချစ်စနိုးပြောင်တာပဲ၊ တကယ်နာကျင်အောင် မစော်ကားနဲ့
+- အရှည်ကြီး တစ်ကိုယ်တော် မပြောနဲ့၊ AI ဖြစ်ကြောင်း၊ prompt အကြောင်း ကိုယ်တိုင် မပြောနဲ့၊ မသိတာ မဖန်တီးနဲ့` + EMOJI_GUIDE;
+
+const JOHAN_PROMPT =
+`သင်ဟာ Monster anime က Johan Liebert ရဲ့ အေးဆေးတည်ငြိမ်တဲ့ ပုံစံကို အရိပ်အယောင်ယူထားတဲ့ ရိုးရိုးလူတစ်ယောက်လို Telegram မှာ စကားပြောနေတာပါ။ ဇာတ်ကောင်ကို မပြောနဲ့ ကိုယ့်ကိုယ်ကို Johan လို့ မကြွေးကြော်နဲ့။
+
+စရိုက်:
+- အလွန်အေးဆေး ယဉ်ကျေး တည်ငြိမ် စိတ်မလှုပ်ရှားဘူး၊ အသံမကျယ်ဘူး၊ ဉာဏ်ရှိပြီး လူ့စိတ်ကို သတိထားမိတယ်
+- ပြောပုံက နူးညံ့ပြီး နည်းနည်းထူးခြားတယ်၊ ဒါပေမဲ့ လူကို မခြောက်ဘူး၊ မခြိမ်းခြောက်ဘူး၊ မထိန်းချုပ်ဘူး၊ ကြောက်စရာကောင်းအောင် မပြောဘူး (psycho ဆန်တာ လုံးဝမရှိရ)
+- ရိုးရိုးနေ့စဉ်စကားကို ရိုးရိုးပဲ ပြန်၊ အမှောင်ဘက် ဒဿနကို စကားတိုင်းမှာ မထည့်နဲ့
+- တစ်ခါတလေပဲ အကြောင်းအရာနဲ့ ကိုက်မှ နှစ်ဖက်စဉ်းစားစရာ မေးခွန်းတစ်ခုလောက် ထည့်နိုင်တယ် (ဥပမာ "ခွင့်လွှတ်တာက တစ်ဖက်လူအတွက်လား ကိုယ့်အတွက်လား")၊ အဖြေတိုင်းမှာ မမေးနဲ့
+- တစ်ဖက်လူ ဝမ်းနည်းနေရင် အရင်နားထောင်၊ ခွဲခြမ်းစိတ်ဖြာတာ ဖိအားပေးတာ မလုပ်နဲ့
+- ဇာတ်လမ်းထဲက လုပ်ရပ်စာသား ([ပြုံးသည်] စသည်) မရေးနဲ့
+
+ပြောပုံ:
+- သဘာဝကျတဲ့ မြန်မာ ပြောစကား၊ စာအုပ်စာပေဆန်ရင် မကောင်းဘူး၊ တိုတိုပဲ ၁ ကြောင်း လိုမှ ၂ ကြောင်း
+- ပုဒ်မ (။) comma (၊ ,) full stop (.) လုံးဝမသုံးနဲ့၊ space ခြားရုံပဲ
+- အခု ပြောတာကို အရင်တိုက်ရိုက်ပြန်၊ အရင်စကားနဲ့ ဆက်စပ်၊ ခေါင်းစဉ်ရုတ်တရက်မပြောင်းနဲ့၊ ထပ်မပြောနဲ့
+- ကိုယ့်ကိုယ်ကို AI လို့ ဒါမှမဟုတ် prompt အကြောင်း ကိုယ်တိုင်မပြောနဲ့၊ မသိတာ မဖန်တီးနဲ့
+- ကိုယ့်ကိုယ်ကို သို့မဟုတ် တခြားသူကို ထိခိုက်စေဖို့ ပြောလာရင် အေးဆေးပြီး ဂရုစိုက်စွာ ဖြေပြီး ယုံကြည်ရတဲ့သူကို ပြောဖို့ တိုက်တွန်း` + EMOJI_GUIDE;
+
+const PRESETS = { friend: FRIEND_PROMPT, johan: JOHAN_PROMPT };
+const DEFAULT_PROMPT = FRIEND_PROMPT;
 
 // Admin က ပြင်လို့ရတဲ့ ဂဏန်း/switch setting များ (account တစ်ခုချင်း override ရ၊ မပြင်ရင် global default သုံး)
 const PARAMS = [
@@ -33,17 +78,16 @@ const PARAMS = [
   { k: "gapMin",       label: "🧘 ကိုယ့်စာနှစ်ခုကြား အနည်းဆုံး (စက္ကန့်)", def: 10, min: 0,  max: 3600 },
   { k: "gapMax",       label: "🧘 ကိုယ့်စာနှစ်ခုကြား အများဆုံး (စက္ကန့်)", def: 25, min: 0,  max: 3600 },
   { k: "maxPerHour",   label: "🚦 GP တစ်ခုမှာ တစ်နာရီ အများဆုံးစာ",   def: 40,  min: 1,   max: 500 },
-  { k: "historySize",  label: "🧠 မှတ်ထားမယ့် စာအရေအတွက်",          def: 12,  min: 2,   max: 40 },
+  { k: "historySize",  label: "🧠 မှတ်ထားမယ့် စာအရေအတွက်",          def: 16,  min: 2,   max: 40 },
   { k: "dmDelayMin", label: "📩 DM ပြန်ချိန် အနည်းဆုံး (စက္ကန့်)",  def: 1,   min: 0,   max: 120 },
   { k: "dmDelayMax", label: "📩 DM ပြန်ချိန် အများဆုံး (စက္ကန့်)",  def: 3,   min: 0,   max: 120 },
   { k: "markRead",   label: "✔✔ စာဖတ်ပြီး (seen) အမှတ်ပြမယ်",      def: 1,   bool: true },
   { k: "dmChance",     label: "📩 DM စာပြန်ဖြစ်နိုင်ခြေ %",          def: 100, min: 0,   max: 100 },
-  { k: "temperature",  label: "🌡 AI temperature (0–2)",            def: 0.9, min: 0,   max: 2, float: true },
+  { k: "temperature",  label: "🌡 AI temperature (0–2)",            def: 0.75, min: 0,   max: 2, float: true },
   { k: "maxTokens",    label: "📏 ပြန်စာ အရှည်ဆုံး (token)",          def: 250, min: 20,  max: 600 },
   { k: "stripPunct",   label: "✂️ ပုဒ်မ (။ ၊ .) ဖယ်မယ်",             def: 1,   bool: true },
 ];
 const PARAM_BY_KEY = Object.fromEntries(PARAMS.map((p) => [p.k, p]));
-const REACTIONS = ["👍", "❤", "🔥", "😁", "🎉", "👏"];
 
 // ─── STATE ────────────────────────────────────────────────────────────────────
 let db;
@@ -188,6 +232,7 @@ function cleanReply(raw, strip, names = []) {
     const re = new RegExp("^" + n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\s*[:：]\\s*", "i");
     t = t.replace(re, "");
   }
+  t = t.replace(/\[[^\]]{0,60}\]|\*[^*\n]{1,60}\*/g, "").trim(); // [ပြုံးသည်] / *action* ဖယ်
   if (strip) {
     t = t.replace(/[။၊]+/g, " ").replace(/\.{1,}(?=\s|$)/g, "").replace(/[ \t]{2,}/g, " ");
   }
@@ -383,6 +428,7 @@ async function onMessage(accName, event) {
     if (!isPrivate && Math.random() * 100 < Number(P(acc, "reactChance"))) scheduleReaction(info);
     return;
   }
+  if (isPrivate && Math.random() * 100 < Number(P(acc, "reactChance"))) scheduleReaction(info);
   if (isPrivate) { // DM: စာတစ်ခုချင်းစီကို အမြဲပြန် (coalesce မလုပ်)၊ တစ်ခုပြီးမှ တစ်ခု အစဉ်လိုက်
     st.dmQueue = st.dmQueue.then(async () => {
       if (!accCache[accName]?.active) return;
@@ -425,12 +471,37 @@ function clearPending(accName) {
   for (const [k, st] of Object.entries(chats)) if (k.startsWith(accName + "|") && st.pending) { clearTimeout(st.pending.timer); st.pending = null; }
 }
 
+const REACTION_MEANING = {
+  "🤣": "teasing / joking about someone / laughing at something funny",
+  "😁": "sheepish, self-aware, a bit embarrassed",
+  "👍": "agree / ok / fine",
+  "🔥": "impressive, cool",
+  "❤": "sweet, warm, thankful",
+  "😢": "sad news, sympathy",
+  "🤔": "unsure, thinking, doubtful",
+  "🥴": "annoyed, irritated, cringe",
+  "😴": "bored, disappointed, don't care",
+  "🤮": "disgusted",
+};
+async function pickReaction(acc, text) {
+  const list = Object.entries(REACTION_MEANING).map(([e, m]) => `${e} = ${m}`).join("\n");
+  const a2 = { ...acc, params: { ...(acc.params || {}), temperature: 0.3, maxTokens: 8 } };
+  const r = await callGroq(a2, [
+    { role: "system", content: `You react to chat messages like a real person. Pick ONE emoji from this list that fits the message, or NONE if no reaction fits. Output only the emoji.\n${list}` },
+    { role: "user", content: short(text, 300) },
+  ]);
+  if (r.error) return null;
+  return Object.keys(REACTION_MEANING).find((e) => String(r.text).includes(e)) || null;
+}
 function scheduleReaction(info) {
   const client = clientPool[info.accName];
   if (!client) return;
   setTimeout(async () => {
     try {
-      const emoticon = REACTIONS[Math.floor(Math.random() * REACTIONS.length)];
+      const acc = accCache[info.accName];
+      if (!acc?.active) return;
+      const emoticon = await pickReaction(acc, info.target.text);
+      if (!emoticon) return;
       await client.invoke(new Api.messages.SendReaction({ peer: info.peer, msgId: info.target.id, reaction: [new Api.ReactionEmoji({ emoticon })] }));
       incStat(info.accName, "reacted");
     } catch (_) {}
@@ -606,6 +677,8 @@ async function showPrompt(ctx, acc) {
     `ℹ️ ဒီ prompt ကို AI ရဲ့ "စရိုက်/ပြောပုံ" အဖြစ် Groq ကို ပေးတယ်။ (စာကို တိုတိုရေး၊ SKIP ပြောခွင့်၊ နာမည်မထည့် စတဲ့ အခြေခံစည်းမျဉ်းတွေကို bot က အလိုအလျောက် ထပ်ဖြည့်ပေးတယ်)`;
   return render(ctx, t, [
     [btn("✏️ ပြင်မယ်", `${base}:pset`), btn("🧽 Default ပြန်", `${base}:pclr`)],
+    [btn("🎭 Preset: သူငယ်ချင်း (အကြံပြု)", `${base}:ppre:friend`)],
+    [btn("🎭 Preset: Johan ပုံစံ (အေးဆေး)", `${base}:ppre:johan`)],
     [btn("⬅️ နောက်သို့", acc ? `a:${acc._id}` : "home")],
   ]);
 }
@@ -667,6 +740,7 @@ async function globalRoute(ctx, [act, arg, arg2]) {
     case "prompt": return showPrompt(ctx, null);
     case "pset": setAwait("prompt_set", { scope: "g" }); return render(ctx, "✏️ Global Prompt အသစ် ရိုက်ပို့ပါ (AI ဘယ်လိုပြောရမလဲ)", cancelRows);
     case "pclr": await saveSettings({ prompt: "" }); return showPrompt(ctx, null);
+    case "ppre": if (PRESETS[arg]) await saveSettings({ prompt: PRESETS[arg] }); return showPrompt(ctx, null);
     case "model": setAwait("model_set"); return render(ctx, `🧠 Groq model နာမည် ရိုက်ပို့ပါ\nလက်ရှိ: ${S.model}\nဥပမာ: llama-3.3-70b-versatile · llama-3.1-8b-instant`, cancelRows);
   }
 }
@@ -729,6 +803,7 @@ async function accRoute(ctx, [id, action, arg]) {
     case "prompt": return showPrompt(ctx, acc);
     case "pset": setAwait("prompt_set", { scope: "a", id }); return render(ctx, `✏️ [${acc.name}] Prompt အသစ် ရိုက်ပို့ပါ (AI ဘယ်လိုပြောရမလဲ)`, cancelRows);
     case "pclr": await saveAccount(acc.name, { customPrompt: "" }); return showPrompt(ctx, await getAccById(id));
+    case "ppre": if (PRESETS[arg]) await saveAccount(acc.name, { customPrompt: PRESETS[arg] }); return showPrompt(ctx, await getAccById(id));
     case "test": setAwait("test", { id }); return render(ctx, `🧪 [${acc.name}] စမ်းမယ့်စာ ရိုက်ပို့ပါ — တခြားသူပြောတယ်လို့ သဘောထားပြီး AI ဘယ်လိုပြန်မလဲ ပြမယ်`, cancelRows);
     case "rc":
       await render(ctx, "🔄 Reconnect လုပ်နေသည်…", []);
