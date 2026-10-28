@@ -192,6 +192,30 @@ function keyStatus(k) {
   return "🟢";
 }
 
+
+// reasoning model တွေ (gpt-oss, qwen3) က max_tokens ကို စဉ်းစားတာနဲ့ကုန်ပြီး content ဗလာပြန်တတ် — ဒါကို ကာ
+function modelBody(model, messages, temperature, maxTokens) {
+  const b = { model, messages, temperature, max_tokens: maxTokens };
+  if (/gpt-oss/i.test(model)) { b.reasoning_effort = "low"; b.max_tokens = Math.max(maxTokens, 1000); }
+  else if (/qwen3/i.test(model)) { b.reasoning_effort = "none"; }
+  return b;
+}
+// Groq မှာ တကယ်ရှိတဲ့ model တွေကို မေးပြီး fallback စာရင်း ပြုလုပ် (model ပျက်/ပြောင်းတာ ကာ)
+let modelCache = { t: 0, ids: [] };
+async function fallbackModels(acc, current) {
+  if (Date.now() - modelCache.t > 30 * 60e3) {
+    for (const key of keyCandidates(acc)) {
+      try {
+        const res = await fetch("https://api.groq.com/openai/v1/models", { headers: { Authorization: `Bearer ${key}` } });
+        if (res.ok) { const j = await res.json(); modelCache = { t: Date.now(), ids: (j.data || []).map((m) => m.id) }; console.log(`groq: model ${modelCache.ids.length} ခု ရှိ`); break; }
+      } catch (_) {}
+    }
+  }
+  const pref = ["llama-3.3-70b-versatile", "meta-llama/llama-4-scout-17b-16e-instruct", "openai/gpt-oss-20b", "openai/gpt-oss-120b", "qwen/qwen3-32b", "llama-3.1-8b-instant"];
+  const ids = modelCache.ids;
+  return pref.filter((m) => m !== current && (!ids.length || ids.includes(m)));
+}
+
 // OpenAI-compatible chat completion; key တစ်ခု limit/ပျက်ရင် နောက်တစ်ခုကို အလိုအလျောက် ကူး
 async function callGroq(acc, messages, opts = {}) {
   const cands = keyCandidates(acc);
@@ -210,14 +234,18 @@ async function callGroq(acc, messages, opts = {}) {
       const res = await fetch(GROQ_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-        body: JSON.stringify({ model: opts.model || S.model, messages, temperature: opts.temperature ?? Number(P(acc, "temperature")), max_tokens: Number(P(acc, "maxTokens")) }),
+        body: JSON.stringify(modelBody(opts.model || S.model, messages, opts.temperature ?? Number(P(acc, "temperature")), Number(P(acc, "maxTokens")))),
         signal: ctl.signal,
       });
       clearTimeout(timer);
       if (res.ok) {
         const j = await res.json();
-        const text = j?.choices?.[0]?.message?.content;
-        if (typeof text === "string") return { text, key };
+        let text = j?.choices?.[0]?.message?.content;
+        if (typeof text === "string") {
+          text = text.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+          if (!text) console.log(`groq: ဗလာ — model=${opts.model || S.model} finish=${j?.choices?.[0]?.finish_reason} reasoning=${(j?.choices?.[0]?.message?.reasoning || "").length}ch`);
+          return { text, key };
+        }
         lastErr = "empty response"; continue;
       }
       let body = ""; try { body = await res.text(); } catch (_) {}
@@ -561,7 +589,10 @@ async function respond(info) {
     r = await callGroq(acc, [...messages, { role: "user", content: "(Reply now. Write your message, do not leave it empty.)" }], { temperature: Math.min(1.2, Number(P(acc, "temperature")) + 0.2) });
     if (!r.error && !String(r.text || "").trim()) {
       console.log(`engine[${accName}]: ထပ်ဗလာ — fallback model သုံးမယ်`);
-      r = await callGroq(acc, messages, { model: "llama-3.1-8b-instant" });
+      for (const fm of (await fallbackModels(acc, S.model)).slice(0, 3)) {
+        r = await callGroq(acc, messages, { model: fm });
+        if (!r.error && String(r.text || "").trim()) { console.log(`engine[${accName}]: fallback ${fm} အလုပ်လုပ်`); break; }
+      }
     }
   }
   if (r.error) {
