@@ -62,6 +62,7 @@ let draft = null;
 
 const bot = new Telegraf(BOT_TOKEN || "0:x");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const withTimeout = (p, ms, label = "timeout") => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(label)), ms))]);
 const rnd = (a, b) => a + Math.random() * Math.max(0, b - a);
 const short = (s, n = 40) => (String(s).length > n ? String(s).slice(0, n - 1) + "…" : String(s));
 const clip = (s) => (s.length > 3900 ? s.slice(0, 3890) + "\n…" : s);
@@ -265,6 +266,7 @@ async function buildMonitor(accName) {
 async function buildClient(sessionString, accName) {
   const client = new TelegramClient(new StringSession(sessionString), API_ID, API_HASH, {
     connectionRetries: 10, retryDelay: 2000, autoReconnect: true, requestRetries: 5,
+    useWSS: process.env.TG_USE_WSS === "1", // port 443 WebSocket — TIMEOUT များရင် Render env မှာ TG_USE_WSS=1 ထည့်ကြည့်
   });
   await client.connect();
   let me;
@@ -289,11 +291,12 @@ async function initAllClients() {
   }
 }
 async function reconnectAccount(acc) {
-  if (clientPool[acc.name]) { try { await clientPool[acc.name].disconnect(); } catch (_) {} delete clientPool[acc.name]; }
+  if (clientPool[acc.name]) { try { await withTimeout(clientPool[acc.name].disconnect(), 10000, "DISCONNECT_TIMEOUT"); } catch (_) {} delete clientPool[acc.name]; }
   clientPool[acc.name] = await buildClient(acc.sessionString, acc.name);
   delete monitor[acc.name];
   buildMonitor(acc.name).catch(() => {});
 }
+const pingFails = {};
 function startHealthCheck() {
   setInterval(async () => {
     for (const acc of await getAccounts()) {
@@ -301,15 +304,17 @@ function startHealthCheck() {
       if (!client) continue;
       let alive = !!client.connected;
       if (alive) {
-        try { await Promise.race([client.getMe(), new Promise((_, rej) => setTimeout(() => rej(new Error("PING_TIMEOUT")), 20000))]); }
+        try { await withTimeout(client.getMe(), 25000, "PING_TIMEOUT"); }
         catch (e) { alive = false; console.log(`healthcheck[${acc.name}]: ping မအောင်မြင် (${e.message})`); }
       }
-      if (!alive) {
-        console.log(`healthcheck[${acc.name}]: reconnect လုပ်နေသည်`);
-        try { await reconnectAccount(acc); } catch (e) { console.error(`healthcheck[${acc.name}]: ${e.message}`); delete clientPool[acc.name]; }
-      }
+      if (alive) { pingFails[acc.name] = 0; continue; }
+      pingFails[acc.name] = (pingFails[acc.name] || 0) + 1;
+      if (pingFails[acc.name] < 2) continue; // တစ်ခါလောက် နှေးတာနဲ့ reconnect မလုပ် — ဆက်တိုက် ၂ ကြိမ်မှ
+      console.log(`healthcheck[${acc.name}]: reconnect လုပ်နေသည်`);
+      try { await withTimeout(reconnectAccount(acc), 60000, "RECONNECT_TIMEOUT"); pingFails[acc.name] = 0; console.log(`healthcheck[${acc.name}]: reconnect အောင်မြင်`); }
+      catch (e) { console.error(`healthcheck[${acc.name}]: ${e.message}`); }
     }
-  }, 2 * 60 * 1000);
+  }, 60 * 1000);
 }
 
 // ─── CHAT ENGINE ──────────────────────────────────────────────────────────────
@@ -335,7 +340,8 @@ async function onMessage(accName, event) {
   const text = (msg.message || "").trim();
   if (!text) return;
 
-  const isPrivate = !!msg.isPrivate;
+  let isPrivate = !!msg.isPrivate;
+  try { if (!isPrivate && msg.peerId?.className === "PeerUser") isPrivate = true; } catch (_) {}
   let mon = null;
   if (!isPrivate) {
     if (msg.post) return; // channel broadcast
@@ -343,7 +349,7 @@ async function onMessage(accName, event) {
     mon = monitor[accName]?.get(chatId);
     if (!mon) return;
     if ((acc.blocked || []).includes(mon.link)) return;
-  } else if (acc.dmOn === false) return;
+  } else if (acc.dmOn === false) { console.log(`dm[${accName}]: DM ပိတ်ထား — ကျော်`); return; }
 
   let sender; try { sender = await msg.getSender(); } catch (_) {}
   if (sender?.bot) return;
@@ -354,6 +360,7 @@ async function onMessage(accName, event) {
   const st = chatState(accName, chatId);
   const replyToId = msg.replyTo?.replyToMsgId;
   pushBuf(st, { id: msg.id, name, text: short(text, 500), own: false, ts: Date.now() }, Number(P(acc, "historySize")));
+  if (isPrivate) console.log(`dm[${accName}]: 📨 ${short(name, 20)} — ${acc.active ? "ပြန်ဖို့ တန်းစီ" : "Stop ထားလို့ မပြန်"}`);
   if (!acc.active) return; // Stop ထားရင် မှတ်ပဲမှတ်၊ မပြောဘူး
   if (isPrivate && Number(P(acc, "markRead"))) markRead(accName, msg, 300 + Math.random() * 700); // ✔✔ seen
 
@@ -375,7 +382,7 @@ async function onMessage(accName, event) {
     st.dmQueue = st.dmQueue.then(async () => {
       if (!accCache[accName]?.active) return;
       await sleep(rnd(Number(P(acc, "dmDelayMin")), Number(P(acc, "dmDelayMax"))) * 1000);
-      await respond(info);
+      await withTimeout(respond(info), 60000, "RESPOND_TIMEOUT");
     }).catch((e) => console.error(`dm[${accName}]:`, e.message));
     return;
   }
