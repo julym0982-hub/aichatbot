@@ -100,6 +100,9 @@ const PARAMS = [
   { k: "dmChance",     label: "📩 DM စာပြန်ဖြစ်နိုင်ခြေ %",          def: 100, min: 0,   max: 100 },
   { k: "temperature",  label: "🌡 AI temperature (0–2)",            def: 0.75, min: 0,   max: 2, float: true },
   { k: "maxTokens",    label: "📏 ပြန်စာ အရှည်ဆုံး (token)",          def: 250, min: 20,  max: 600 },
+  { k: "autoChat",    label: "🤖 GP ထဲ ကိုယ်တိုင်ဝင်ပြောမယ် (auto)",  def: 1,   bool: true },
+  { k: "autoMin",     label: "🤖 auto ပြောချိန် အနည်းဆုံး (မိနစ်)",   def: 2,   min: 1,   max: 240 },
+  { k: "autoMax",     label: "🤖 auto ပြောချိန် အများဆုံး (မိနစ်)",   def: 7,   min: 1,   max: 240 },
   { k: "stripPunct",   label: "✂️ ပုဒ်မ (။ ၊ .) ဖယ်မယ်",             def: 1,   bool: true },
 ];
 const PARAM_BY_KEY = Object.fromEntries(PARAMS.map((p) => [p.k, p]));
@@ -265,12 +268,14 @@ const META_DM = (myName, burst) =>
 
 function systemPrompt(acc) { return (acc?.customPrompt || S.prompt || DEFAULT_PROMPT); }
 
-function buildGroupMessages(acc, st, title, target, direct, myName, burst) {
+function buildGroupMessages(acc, st, title, target, direct, myName, burst, proactive) {
   const n = Number(P(acc, "historySize"));
   const transcript = st.buf.slice(-n).map((e) => `${e.own ? `${myName} (me)` : e.name}: ${e.text}`).join("\n");
   const user =
     `Group: ${title}\nRecent chat:\n${transcript}\n\n` +
-    `Now reply to ${target.name}'s message: "${short(target.text, 300)}"\nWrite only your reply message.`;
+    (proactive
+      ? `Nobody is talking to you directly. Join the conversation on your own like a normal group member: react to what was just said (latest from ${target.name}: "${short(target.text, 300)}"), add a short comment, joke or question that fits the chat. Do not repeat what you already said. If nothing natural to say, output SKIP.`
+      : `Now reply to ${target.name}'s message: "${short(target.text, 300)}"\nWrite only your reply message.`);
   return [{ role: "system", content: systemPrompt(acc) + META_GROUP(myName, direct, burst) }, { role: "user", content: user }];
 }
 function buildDmMessages(acc, st, myName, target, burst) {
@@ -426,9 +431,9 @@ async function onMessage(accName, event) {
 
   const st = chatState(accName, chatId);
   const replyToId = msg.replyTo?.replyToMsgId;
-  if (isPrivate && st.handled.has(msg.id)) return; // live update + catch-up ထပ်ကျတာ ကာ
+  if (st.handled.has(msg.id)) return; // live update + catch-up ထပ်ကျတာ ကာ
   pushBuf(st, { id: msg.id, name, text: short(text, 500), own: false, ts: Date.now() }, Number(P(acc, "historySize")));
-  if (isPrivate && acc.active) { st.handled.add(msg.id); if (st.handled.size > 300) st.handled.delete(st.handled.values().next().value); }
+  if (acc.active) { st.handled.add(msg.id); if (st.handled.size > 300) st.handled.delete(st.handled.values().next().value); }
   if (isPrivate) console.log(`dm[${accName}]: 📨 ${short(name, 20)} — ${acc.active ? "ပြန်ဖို့ တန်းစီ" : "Stop ထားလို့ မပြန်"}`);
   if (!acc.active) return; // Stop ထားရင် မှတ်ပဲမှတ်၊ မပြောဘူး
   if (isPrivate && Number(P(acc, "markRead"))) markRead(accName, msg, 300 + Math.random() * 700); // ✔✔ seen
@@ -548,7 +553,7 @@ async function respond(info) {
   const tStart = Date.now();
   const burst = !info.followUp && Math.random() * 100 < Number(P(acc, "burstChance"));
   console.log(`engine[${accName}]: ${info.isDm ? (info.followUp ? "DM follow-up" : "DM") : short(info.title, 20)} — Groq ကို မေးနေသည် (key ${keyCandidates(acc).length} ခု${burst ? ", burst" : ""})`);
-  const messages = info.isDm ? buildDmMessages(acc, st, me.name, info.target, burst) : buildGroupMessages(acc, st, info.title, info.target, info.direct, me.name, burst);
+  const messages = info.isDm ? buildDmMessages(acc, st, me.name, info.target, burst) : buildGroupMessages(acc, st, info.title, info.target, info.direct, me.name, burst, info.proactive);
   let r = await callGroq(acc, messages);
   // ဗလာပြန်ရင် (၁) ပြောင်းပြီးထပ်မေး (၂) model အသေးနဲ့ fallback
   if (!r.error && !String(r.text || "").trim()) {
@@ -616,6 +621,72 @@ async function respond(info) {
       }
     }
   }
+}
+
+
+// ─── GP POLLING (update stream TIMEOUT ဖြစ်လည်း GP စာတွေ မလွတ်အောင်) ───────────────
+const pollLast = {};
+let pollBusy = false;
+function startGroupPoll() {
+  setInterval(async () => {
+    if (pollBusy) return;
+    pollBusy = true;
+    try {
+      for (const [name, acc] of Object.entries(accCache)) {
+        const client = clientPool[name], mons = monitor[name];
+        if (!client || !client.connected || !mons) continue;
+        for (const [chatId, mon] of mons) {
+          if ((acc.blocked || []).includes(mon.link)) continue;
+          const key = `${name}|${chatId}`, first = pollLast[key] === undefined;
+          try {
+            const msgs = await withTimeout(client.getMessages(mon.entity, { limit: first ? 15 : 10 }), 15000, "POLL_TIMEOUT");
+            const list = [...msgs].filter((m) => m && m.id).sort((a, b) => a.id - b.id);
+            if (!list.length) { if (first) pollLast[key] = 0; continue; }
+            const st = chatState(name, chatId);
+            if (first) { // ပထမအကြိမ် — context အတွက် မှတ်ပဲမှတ်၊ မပြန်
+              const me = client._me || { name: "me" };
+              for (const m of list) {
+                st.handled.add(m.id);
+                const t = (m.message || "").trim();
+                if (!t) continue;
+                pushBuf(st, { id: m.id, name: m.out ? me.name : displayName(m.sender), text: short(t, 500), own: !!m.out, ts: (m.date || 0) * 1000 || Date.now() }, Number(P(acc, "historySize")));
+              }
+              pollLast[key] = list[list.length - 1].id;
+              continue;
+            }
+            const last = pollLast[key];
+            pollLast[key] = Math.max(last, list[list.length - 1].id);
+            for (const m of list) { if (m.id > last && !m.out) await onMessage(name, { message: m, _catchup: true }); }
+          } catch (e) { console.log(`poll[${name}]: ${short(mon.title, 20)} — ${e.message}`); }
+          await sleep(300);
+        }
+      }
+    } finally { pollBusy = false; }
+  }, 20 * 1000);
+}
+
+// ─── AUTO CHAT (ဘယ်သူမှ မခေါ်ဘဲ GP ထဲက စကားပြောတာကို ကိုယ်တိုင် လိုက်ပြော) ───────────
+function startAutoChat() {
+  setInterval(() => {
+    const now = Date.now();
+    for (const [name, acc] of Object.entries(accCache)) {
+      if (!acc.active || !Number(P(acc, "autoChat")) || !clientPool[name] || !monitor[name]) continue;
+      const aMin = Number(P(acc, "autoMin")), aMax = Math.max(aMin, Number(P(acc, "autoMax")));
+      for (const [chatId, mon] of monitor[name]) {
+        if ((acc.blocked || []).includes(mon.link)) continue;
+        const st = chatState(name, chatId);
+        if (!st.nextAuto) { st.nextAuto = now + rnd(aMin, aMax) * 60e3; continue; }
+        if (now < st.nextAuto) continue;
+        st.nextAuto = now + rnd(aMin, aMax) * 60e3;
+        if (st.pending) continue;
+        const last = st.buf[st.buf.length - 1];
+        if (!last || last.own || now - last.ts > 30 * 60e3) continue;   // ကိုယ်ပဲ နောက်ဆုံးပြောထား / GP တိတ်နေ → မပြော
+        if (now - st.lastOwn < aMin * 60e3) continue;
+        const info = { accName: name, chatId, peer: mon.entity, title: mon.title, isDm: false, link: mon.link, target: { id: last.id, name: last.name, text: last.text }, direct: false, proactive: true };
+        setTimeout(() => respond(info).catch((e) => console.error(`auto[${name}]:`, e.message)), rnd(0, 15000));
+      }
+    }
+  }, 30 * 1000);
 }
 
 // Telegram update တွေ ပျက်ကျန်ခဲ့ရင် (TIMEOUT) — မဖတ်ရသေးတဲ့ DM တွေကို ၂၅ စက္ကန့်တစ်ခါ ရှာပြီး ပြန်ဖြေ
@@ -975,6 +1046,8 @@ async function main() {
   await initAllClients();
   startHealthCheck();
   startCatchup();
+  startGroupPoll();
+  startAutoChat();
   await bot.telegram.deleteWebhook({ drop_pending_updates: true });
 
   let launched = false, retry = 0;
