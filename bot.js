@@ -39,7 +39,7 @@ const PARAMS = [
   { k: "markRead",   label: "✔✔ စာဖတ်ပြီး (seen) အမှတ်ပြမယ်",      def: 1,   bool: true },
   { k: "dmChance",     label: "📩 DM စာပြန်ဖြစ်နိုင်ခြေ %",          def: 100, min: 0,   max: 100 },
   { k: "temperature",  label: "🌡 AI temperature (0–2)",            def: 0.9, min: 0,   max: 2, float: true },
-  { k: "maxTokens",    label: "📏 ပြန်စာ အရှည်ဆုံး (token)",          def: 120, min: 20,  max: 600 },
+  { k: "maxTokens",    label: "📏 ပြန်စာ အရှည်ဆုံး (token)",          def: 250, min: 20,  max: 600 },
   { k: "stripPunct",   label: "✂️ ပုဒ်မ (။ ၊ .) ဖယ်မယ်",             def: 1,   bool: true },
 ];
 const PARAM_BY_KEY = Object.fromEntries(PARAMS.map((p) => [p.k, p]));
@@ -212,9 +212,13 @@ function buildGroupMessages(acc, st, title, target, direct, myName) {
     `Now reply to ${target.name}'s message: "${short(target.text, 300)}"\nWrite only your reply message.`;
   return [{ role: "system", content: systemPrompt(acc) + META_GROUP(myName, direct) }, { role: "user", content: user }];
 }
-function buildDmMessages(acc, st, myName) {
+function buildDmMessages(acc, st, myName, target) {
   const n = Number(P(acc, "historySize"));
-  const hist = st.buf.slice(-n).map((e) => ({ role: e.own ? "assistant" : "user", content: e.text }));
+  // ဒီ target စာအထိပဲ ယူ — နောက်ဆုံးစာက အမြဲ user ဖြစ်ရမယ် (မဟုတ်ရင် AI က ဗလာပြန်တတ်)
+  let upto = st.buf;
+  if (target?.id) { const idx = st.buf.findIndex((e) => !e.own && e.id === target.id); if (idx >= 0) upto = st.buf.slice(0, idx + 1); }
+  const hist = upto.slice(-n).map((e) => ({ role: e.own ? "assistant" : "user", content: e.text }));
+  if (!hist.length || hist[hist.length - 1].role !== "user") hist.push({ role: "user", content: target?.text || "..." });
   return [{ role: "system", content: systemPrompt(acc) + META_DM(myName) }, ...hist];
 }
 
@@ -448,8 +452,12 @@ async function respond(info) {
 
   const tStart = Date.now();
   console.log(`engine[${accName}]: ${info.isDm ? "DM" : short(info.title, 20)} — Groq ကို မေးနေသည် (key ${keyCandidates(acc).length} ခု)`);
-  const messages = info.isDm ? buildDmMessages(acc, st, me.name) : buildGroupMessages(acc, st, info.title, info.target, info.direct, me.name);
-  const r = await callGroq(acc, messages);
+  const messages = info.isDm ? buildDmMessages(acc, st, me.name, info.target) : buildGroupMessages(acc, st, info.title, info.target, info.direct, me.name);
+  let r = await callGroq(acc, messages);
+  if (!r.error && !String(r.text || "").trim() && info.isDm) { // ဗလာပြန်ရင် တစ်ခါ ထပ်မေး
+    console.log(`engine[${accName}]: Groq ဗလာပြန် — ထပ်မေးမယ်`);
+    r = await callGroq(acc, [...messages, { role: "user", content: "(Please reply to my last message now, in a short natural way.)" }]);
+  }
   if (r.error) {
     console.error(`groq[${accName}]: ${r.error}`);
     if (r.error !== "NO_KEY") {
