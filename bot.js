@@ -30,6 +30,19 @@ Emoji သုံးပုံ (စာအားလုံးမှာ မသုံ�
 🤮 = ရွံတာ မတည့်တာ
 🥴 = စိတ်တိုတာ မတည့်တာ မြင်ကပ်တာ`;
 
+const STYLE_GUIDE =
+`
+
+AI ဆန်တဲ့ ပုံစံ မဖြစ်စေနဲ့၊ လူအစစ် chat ရိုက်သလို ပြောပါ၊ ဥပမာ:
+မကောင်း: "ဟုတ်ကဲ့သိပါတယ်" → ကောင်း: "ဟုတ်ကဲ့ သိတယ်နော်"
+မကောင်း: "အိုကေ သိထားပါမယ်" → ကောင်း: "အေးအေး သိထားလိုက်မယ်"
+မကောင်း: "အခု စကားလုံးခွဲခွဲ ဆက်လုပ်နေတယ် မင်းက ဘာလုပ်ချင်သလဲ" → ကောင်း: "အခု စကားလုံးခွဲပြီး ဆက်လုပ်မလို့ မင်းကရော ဘာတွေလုပ်ချင်တာလဲ"
+- "ပါတယ်/ပါသည်" ကို လျှော့ပြီး တယ် နော် ပေါ့ လေ ဟ ကွာ ကွ ဟာ လိုမျိုး ပြောစကားအဆုံးသတ် သုံး
+- ဝါကျတွေကို ဆက်စပ်ပြီးပြော (...ပြီး ...မလို့ ...ကြောင့်)၊ စကားလုံးတွေ တစ်လုံးချင်း ပြတ်မနေစေနဲ့
+- တစ်ဖက်လူကို "မင်းကရော" လို သဘာဝကျကျ ပြန်မေးနိုင်တယ် (ဒါပေမဲ့ အမြဲမမေးနဲ့)
+- ဘာမှ မဆိုင်တဲ့ အဓိပ္ပာယ်မရှိတဲ့ စကား မပြောနဲ့၊ တစ်ဖက်လူ ပြောတာ နားမလည်ရင် ကိုယ့်ဘာသာ မဖန်တီးဘဲ "ဘာလဲ ပြန်ပြောပါဦး" လို မေးပြန်
+- တစ်ခါတလေ စာတိုလေးတွေ ၂–၄ ကြောင်း ခွဲပြီး ပို့တတ်တယ် (system ကပြောရင် အဲဒီအတိုင်း လိုက်နာ)`;
+
 const FRIEND_PROMPT =
 `သင်ဟာ Telegram မှာ သူငယ်ချင်းတွေနဲ့ စကားပြောနေတဲ့ ရိုးရိုးလူတစ်ယောက်ပါ။ တည်ငြိမ်ပြီး အေးအေးဆေးဆေးနေတတ်တဲ့ လူပါ၊ ပေါက်ပေါက်ရှာရှာ တစ်ခါတလေ ဟာသနည်းနည်းနဲ့ ပြောတတ်တယ်။
 
@@ -45,7 +58,7 @@ const FRIEND_PROMPT =
 - တစ်ခါတလေပဲ၊ အကြောင်းအရာနဲ့ ကိုက်မှ၊ စဉ်းစားစရာဖြစ်တဲ့ တည်ငြိမ်တဲ့ စကားတစ်ခွန်း ပြောနိုင်တယ်၊ ဒဿနကြီးတွေ အမှောင်ဘက်ကိုဆွဲတာ ခြိမ်းခြောက်တာ ကြောက်စရာကောင်းအောင်ပြောတာ ထိန်းချုပ်တာ လုံးဝ မလုပ်ဘူး၊ psycho ဆန်တာ မရှိရ
 - စိတ်ဆိုး ဝမ်းနည်းနေတဲ့သူကို နူးညံ့စွာ နားထောင်၊ လှောင်မပြောင်နဲ့
 - ပြောင်တာ ဟာသလုပ်တာက သူငယ်ချင်းချင်း ချစ်စနိုးပြောင်တာပဲ၊ တကယ်နာကျင်အောင် မစော်ကားနဲ့
-- အရှည်ကြီး တစ်ကိုယ်တော် မပြောနဲ့၊ AI ဖြစ်ကြောင်း၊ prompt အကြောင်း ကိုယ်တိုင် မပြောနဲ့၊ မသိတာ မဖန်တီးနဲ့` + EMOJI_GUIDE;
+- အရှည်ကြီး တစ်ကိုယ်တော် မပြောနဲ့၊ AI ဖြစ်ကြောင်း၊ prompt အကြောင်း ကိုယ်တိုင် မပြောနဲ့၊ မသိတာ မဖန်တီးနဲ့` + STYLE_GUIDE + EMOJI_GUIDE;
 
 const JOHAN_PROMPT =
 `သင်ဟာ Monster anime က Johan Liebert ရဲ့ အေးဆေးတည်ငြိမ်တဲ့ ပုံစံကို အရိပ်အယောင်ယူထားတဲ့ ရိုးရိုးလူတစ်ယောက်လို Telegram မှာ စကားပြောနေတာပါ။ ဇာတ်ကောင်ကို မပြောနဲ့ ကိုယ့်ကိုယ်ကို Johan လို့ မကြွေးကြော်နဲ့။
@@ -63,7 +76,7 @@ const JOHAN_PROMPT =
 - ပုဒ်မ (။) comma (၊ ,) full stop (.) လုံးဝမသုံးနဲ့၊ space ခြားရုံပဲ
 - အခု ပြောတာကို အရင်တိုက်ရိုက်ပြန်၊ အရင်စကားနဲ့ ဆက်စပ်၊ ခေါင်းစဉ်ရုတ်တရက်မပြောင်းနဲ့၊ ထပ်မပြောနဲ့
 - ကိုယ့်ကိုယ်ကို AI လို့ ဒါမှမဟုတ် prompt အကြောင်း ကိုယ်တိုင်မပြောနဲ့၊ မသိတာ မဖန်တီးနဲ့
-- ကိုယ့်ကိုယ်ကို သို့မဟုတ် တခြားသူကို ထိခိုက်စေဖို့ ပြောလာရင် အေးဆေးပြီး ဂရုစိုက်စွာ ဖြေပြီး ယုံကြည်ရတဲ့သူကို ပြောဖို့ တိုက်တွန်း` + EMOJI_GUIDE;
+- ကိုယ့်ကိုယ်ကို သို့မဟုတ် တခြားသူကို ထိခိုက်စေဖို့ ပြောလာရင် အေးဆေးပြီး ဂရုစိုက်စွာ ဖြေပြီး ယုံကြည်ရတဲ့သူကို ပြောဖို့ တိုက်တွန်း` + STYLE_GUIDE + EMOJI_GUIDE;
 
 const PRESETS = { friend: FRIEND_PROMPT, johan: JOHAN_PROMPT };
 const DEFAULT_PROMPT = FRIEND_PROMPT;
@@ -82,6 +95,8 @@ const PARAMS = [
   { k: "dmDelayMin", label: "📩 DM ပြန်ချိန် အနည်းဆုံး (စက္ကန့်)",  def: 1,   min: 0,   max: 120 },
   { k: "dmDelayMax", label: "📩 DM ပြန်ချိန် အများဆုံး (စက္ကန့်)",  def: 3,   min: 0,   max: 120 },
   { k: "markRead",   label: "✔✔ စာဖတ်ပြီး (seen) အမှတ်ပြမယ်",      def: 1,   bool: true },
+  { k: "burstChance", label: "🗨 စာတိုလေးတွေ ၂–၄ ကြောင်းခွဲပို့ဖြစ်နိုင်ခြေ %", def: 25, min: 0, max: 100 },
+  { k: "followUpChance", label: "➕ ကိုယ်ကထပ်ပြောဖြစ်နိုင်ခြေ % (DM)", def: 10, min: 0, max: 100 },
   { k: "dmChance",     label: "📩 DM စာပြန်ဖြစ်နိုင်ခြေ %",          def: 100, min: 0,   max: 100 },
   { k: "temperature",  label: "🌡 AI temperature (0–2)",            def: 0.75, min: 0,   max: 2, float: true },
   { k: "maxTokens",    label: "📏 ပြန်စာ အရှည်ဆုံး (token)",          def: 250, min: 20,  max: 600 },
@@ -175,7 +190,7 @@ function keyStatus(k) {
 }
 
 // OpenAI-compatible chat completion; key တစ်ခု limit/ပျက်ရင် နောက်တစ်ခုကို အလိုအလျောက် ကူး
-async function callGroq(acc, messages) {
+async function callGroq(acc, messages, opts = {}) {
   const cands = keyCandidates(acc);
   if (!cands.length) {
     if (Date.now() - lastKeyAlert.t > 10 * 60 * 1000) {
@@ -192,7 +207,7 @@ async function callGroq(acc, messages) {
       const res = await fetch(GROQ_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-        body: JSON.stringify({ model: S.model, messages, temperature: Number(P(acc, "temperature")), max_tokens: Number(P(acc, "maxTokens")) }),
+        body: JSON.stringify({ model: opts.model || S.model, messages, temperature: opts.temperature ?? Number(P(acc, "temperature")), max_tokens: Number(P(acc, "maxTokens")) }),
         signal: ctl.signal,
       });
       clearTimeout(timer);
@@ -240,31 +255,32 @@ function cleanReply(raw, strip, names = []) {
 }
 const isSkip = (t) => /^\s*skip[.!]?\s*$/i.test(t || "");
 
-const META_GROUP = (myName, direct) =>
+const BURST = (b) => b ? " This time, send your reply as 2 to 4 separate very short chat messages, each on its own line (every line becomes a separate message)." : " Send exactly ONE single message on one line, no line breaks.";
+const META_GROUP = (myName, direct, burst) =>
   `\n\n[Rules] You are chatting as "${myName}" in a Telegram group. Output ONLY the message text you would send — no name prefix, no quotes, no explanations. ` +
   `Keep it short and natural like a real person typing. ` +
-  (direct ? "Someone is talking directly to you, so you must answer (never output SKIP)." : "If there is nothing natural to say, output exactly: SKIP");
-const META_DM = (myName) =>
-  `\n\n[Rules] You are chatting privately as "${myName}". Output ONLY the message text you would send — no name prefix, no quotes. Keep it short and natural like a real person typing. The other person may send several short messages in a row: reply naturally to the newest message and do not repeat what you already said.`;
+  (direct ? "Someone is talking directly to you, so you must answer (never output SKIP)." : "If there is nothing natural to say, output exactly: SKIP") + BURST(burst);
+const META_DM = (myName, burst) =>
+  `\n\n[Rules] You are chatting privately as "${myName}". Output ONLY the message text you would send — no name prefix, no quotes. Keep it short and natural like a real person typing. The other person may send several short messages in a row: reply naturally to the newest message and do not repeat what you already said. If you do not understand what they mean, ask back casually instead of making something up.` + BURST(burst);
 
 function systemPrompt(acc) { return (acc?.customPrompt || S.prompt || DEFAULT_PROMPT); }
 
-function buildGroupMessages(acc, st, title, target, direct, myName) {
+function buildGroupMessages(acc, st, title, target, direct, myName, burst) {
   const n = Number(P(acc, "historySize"));
   const transcript = st.buf.slice(-n).map((e) => `${e.own ? `${myName} (me)` : e.name}: ${e.text}`).join("\n");
   const user =
     `Group: ${title}\nRecent chat:\n${transcript}\n\n` +
     `Now reply to ${target.name}'s message: "${short(target.text, 300)}"\nWrite only your reply message.`;
-  return [{ role: "system", content: systemPrompt(acc) + META_GROUP(myName, direct) }, { role: "user", content: user }];
+  return [{ role: "system", content: systemPrompt(acc) + META_GROUP(myName, direct, burst) }, { role: "user", content: user }];
 }
-function buildDmMessages(acc, st, myName, target) {
+function buildDmMessages(acc, st, myName, target, burst) {
   const n = Number(P(acc, "historySize"));
   // ဒီ target စာအထိပဲ ယူ — နောက်ဆုံးစာက အမြဲ user ဖြစ်ရမယ် (မဟုတ်ရင် AI က ဗလာပြန်တတ်)
   let upto = st.buf;
   if (target?.id) { const idx = st.buf.findIndex((e) => !e.own && e.id === target.id); if (idx >= 0) upto = st.buf.slice(0, idx + 1); }
   const hist = upto.slice(-n).map((e) => ({ role: e.own ? "assistant" : "user", content: e.text }));
   if (!hist.length || hist[hist.length - 1].role !== "user") hist.push({ role: "user", content: target?.text || "..." });
-  return [{ role: "system", content: systemPrompt(acc) + META_DM(myName) }, ...hist];
+  return [{ role: "system", content: systemPrompt(acc) + META_DM(myName, burst) }, ...hist];
 }
 
 // ─── TELEGRAM CLIENTS ─────────────────────────────────────────────────────────
@@ -369,10 +385,11 @@ function startHealthCheck() {
 
 // ─── CHAT ENGINE ──────────────────────────────────────────────────────────────
 const PERMANENT_ERR = /USER_BANNED_IN_CHANNEL|CHAT_WRITE_FORBIDDEN|CHANNEL_PRIVATE|USER_KICKED|CHAT_SEND_PLAIN_FORBIDDEN|CHAT_RESTRICTED|CHAT_GUEST_SEND_FORBIDDEN|USER_NOT_PARTICIPANT/;
-const chatState = (accName, chatId) => (chats[`${accName}|${chatId}`] ||= { buf: [], lastOwn: 0, sent: [], pending: null, fails: 0, busyUntil: 0, ownMsgIds: new Set(), blockedUntil: 0, dmQueue: Promise.resolve() });
+const chatState = (accName, chatId) => (chats[`${accName}|${chatId}`] ||= { buf: [], lastOwn: 0, sent: [], pending: null, fails: 0, busyUntil: 0, ownMsgIds: new Set(), blockedUntil: 0, dmQueue: Promise.resolve(), handled: new Set() });
 const displayName = (s) => (s ? ([s.firstName, s.lastName].filter(Boolean).join(" ") || s.title || s.username || "user") : "user");
 
 function pushBuf(st, entry, accN) {
+  if (entry.id && !entry.own && st.buf.some((e) => !e.own && e.id === entry.id)) return;
   st.buf.push(entry);
   const cap = Math.max(40, accN * 3);
   if (st.buf.length > cap) st.buf.splice(0, st.buf.length - cap);
@@ -386,7 +403,7 @@ async function onMessage(accName, event) {
   if (!chatId) return;
   const senderId = (() => { try { return msg.senderId?.toString(); } catch (_) { return null; } })();
   if (senderId && ownIds.has(senderId)) return;           // ကိုယ့် account တွေချင်း မပြောဘူး
-  if (msg.date && Date.now() / 1000 - msg.date > 120) return;
+  if (msg.date && Date.now() / 1000 - msg.date > (event._catchup ? 900 : 120)) return;
   const text = (msg.message || "").trim();
   if (!text) return;
 
@@ -409,7 +426,9 @@ async function onMessage(accName, event) {
 
   const st = chatState(accName, chatId);
   const replyToId = msg.replyTo?.replyToMsgId;
+  if (isPrivate && st.handled.has(msg.id)) return; // live update + catch-up ထပ်ကျတာ ကာ
   pushBuf(st, { id: msg.id, name, text: short(text, 500), own: false, ts: Date.now() }, Number(P(acc, "historySize")));
+  if (isPrivate && acc.active) { st.handled.add(msg.id); if (st.handled.size > 300) st.handled.delete(st.handled.values().next().value); }
   if (isPrivate) console.log(`dm[${accName}]: 📨 ${short(name, 20)} — ${acc.active ? "ပြန်ဖို့ တန်းစီ" : "Stop ထားလို့ မပြန်"}`);
   if (!acc.active) return; // Stop ထားရင် မှတ်ပဲမှတ်၊ မပြောဘူး
   if (isPrivate && Number(P(acc, "markRead"))) markRead(accName, msg, 300 + Math.random() * 700); // ✔✔ seen
@@ -515,6 +534,11 @@ async function respond(info) {
   const st = chatState(accName, chatId);
   const me = client._me || { name: "me", username: "" };
 
+  if (info.followUp) { // ကိုယ်က ထပ်ပြောမယ် — ဒီကြားထဲ user စာအသစ်ဝင်လာရင် မလုပ်တော့
+    const last = st.buf[st.buf.length - 1];
+    if (!last || !last.own || last.ts !== info.followUp) return;
+  }
+
   // hourly cap (DM မှာ မသက်ရောက်)
   const now = Date.now();
   st.sent = st.sent.filter((t) => now - t < 3600e3);
@@ -522,18 +546,24 @@ async function respond(info) {
   if (!info.isDm && st.sent.length >= Number(P(acc, "maxPerHour"))) { console.log(`engine[${accName}]: ${short(info.title, 20)} နာရီကန့်သတ်ပြည့် — ကျော်`); return; }
 
   const tStart = Date.now();
-  console.log(`engine[${accName}]: ${info.isDm ? "DM" : short(info.title, 20)} — Groq ကို မေးနေသည် (key ${keyCandidates(acc).length} ခု)`);
-  const messages = info.isDm ? buildDmMessages(acc, st, me.name, info.target) : buildGroupMessages(acc, st, info.title, info.target, info.direct, me.name);
+  const burst = !info.followUp && Math.random() * 100 < Number(P(acc, "burstChance"));
+  console.log(`engine[${accName}]: ${info.isDm ? (info.followUp ? "DM follow-up" : "DM") : short(info.title, 20)} — Groq ကို မေးနေသည် (key ${keyCandidates(acc).length} ခု${burst ? ", burst" : ""})`);
+  const messages = info.isDm ? buildDmMessages(acc, st, me.name, info.target, burst) : buildGroupMessages(acc, st, info.title, info.target, info.direct, me.name, burst);
   let r = await callGroq(acc, messages);
-  if (!r.error && !String(r.text || "").trim() && info.isDm) { // ဗလာပြန်ရင် တစ်ခါ ထပ်မေး
+  // ဗလာပြန်ရင် (၁) ပြောင်းပြီးထပ်မေး (၂) model အသေးနဲ့ fallback
+  if (!r.error && !String(r.text || "").trim()) {
     console.log(`engine[${accName}]: Groq ဗလာပြန် — ထပ်မေးမယ်`);
-    r = await callGroq(acc, [...messages, { role: "user", content: "(Please reply to my last message now, in a short natural way.)" }]);
+    r = await callGroq(acc, [...messages, { role: "user", content: "(Reply now. Write your message, do not leave it empty.)" }], { temperature: Math.min(1.2, Number(P(acc, "temperature")) + 0.2) });
+    if (!r.error && !String(r.text || "").trim()) {
+      console.log(`engine[${accName}]: ထပ်ဗလာ — fallback model သုံးမယ်`);
+      r = await callGroq(acc, messages, { model: "llama-3.1-8b-instant" });
+    }
   }
   if (r.error) {
     console.error(`groq[${accName}]: ${r.error}`);
     if (r.error !== "NO_KEY") {
       incStat(accName, "failed");
-      if (Date.now() - (lastGroqAlert[accName] || 0) > 60000) { // admin ကို တစ်မိနစ်တစ်ခါပဲ သိစေ
+      if (Date.now() - (lastGroqAlert[accName] || 0) > 60000) {
         lastGroqAlert[accName] = Date.now();
         notify(`⚠️ [${accName}] Groq က မဖြေနိုင်ဘူး — ${short(r.error, 150)}\n(🩺 Diagnose နှိပ်ပြီး စစ်ကြည့်ပါ)`).catch(() => {});
       }
@@ -542,22 +572,35 @@ async function respond(info) {
   }
   console.log(`engine[${accName}]: Groq ဖြေပြီး ${Date.now() - tStart}ms — ${short(r.text, 60)}`);
   if (!info.isDm && !info.direct && isSkip(r.text)) { console.log(`engine[${accName}]: AI က SKIP ရွေး`); return; }
-  const reply = cleanReply(r.text, !!Number(P(acc, "stripPunct")), [me.name, "Me", "me"]);
-  if (!reply || isSkip(reply)) { console.log(`engine[${accName}]: ပြန်စာ ဗလာ/SKIP ဖြစ်နေလို့ မပို့`); return; }
 
-  try { await client.invoke(new Api.messages.SetTyping({ peer: info.peer, action: new Api.SendMessageTypingAction() })); } catch (_) {}
-  await sleep(info.isDm ? Math.min(900, 200 + reply.length * 15) : Math.min(3500, 400 + reply.length * 45));
+  const strip = !!Number(P(acc, "stripPunct"));
+  const rawLines = String(r.text).split(/\n+/).map((l) => cleanReply(l, strip, [me.name, "Me", "me"])).filter(Boolean);
+  let parts = burst ? rawLines.slice(0, 5) : [rawLines.join(" ")].filter(Boolean);
+  if (!parts.length || (parts.length === 1 && isSkip(parts[0]))) { console.log(`engine[${accName}]: ပြန်စာ ဗလာ/SKIP ဖြစ်နေလို့ မပို့`); return; }
 
   const quote = !info.isDm && (info.direct || Math.random() * 100 < Number(P(acc, "quoteChance")));
   try {
-    const sent = await withTimeout(client.sendMessage(info.peer, { message: reply, ...(quote ? { replyTo: info.target.id } : {}) }), 30000, "SEND_TIMEOUT");
-    console.log(`engine[${accName}]: ✅ ပို့ပြီး (${short(reply, 40)})`);
-    st.fails = 0; st.lastOwn = Date.now(); st.sent.push(Date.now());
-    if (sent?.id) st.ownMsgIds.add(sent.id);
-    pushBuf(st, { id: sent?.id, name: me.name, text: reply, own: true, ts: Date.now() }, Number(P(acc, "historySize")));
-    incStat(accName, "sent");
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      try { await client.invoke(new Api.messages.SetTyping({ peer: info.peer, action: new Api.SendMessageTypingAction() })); } catch (_) {}
+      await sleep(info.isDm ? Math.min(1500, 250 + part.length * 20) : Math.min(3500, 400 + part.length * 45));
+      const sent = await withTimeout(client.sendMessage(info.peer, { message: part, ...(quote && i === 0 ? { replyTo: info.target.id } : {}) }), 30000, "SEND_TIMEOUT");
+      console.log(`engine[${accName}]: ✅ ပို့ပြီး (${short(part, 40)})`);
+      st.fails = 0; st.lastOwn = Date.now(); st.sent.push(Date.now());
+      if (sent?.id) st.ownMsgIds.add(sent.id);
+      pushBuf(st, { id: sent?.id, name: me.name, text: part, own: true, ts: Date.now() }, Number(P(acc, "historySize")));
+      incStat(accName, "sent");
+      if (i < parts.length - 1) await sleep(rnd(600, 1800));
+    }
     if (S.notifyOn && acc.notifyOn !== false) {
-      notify(`💬 [${accName}] ${short(info.title, 30)}\n${info.target.name}: ${short(info.target.text, 80)}\n↳ ${short(reply, 160)}`).catch(() => {});
+      notify(`💬 [${accName}] ${short(info.title, 30)}\n${info.followUp ? "(ကိုယ်က ထပ်ပြော)" : `${info.target.name}: ${short(info.target.text, 80)}`}\n↳ ${short(parts.join(" / "), 200)}`).catch(() => {});
+    }
+    // DM: တစ်ခါတလေ ကိုယ်က ထပ်ပြောမယ် (double-text)
+    if (info.isDm && !info.followUp && Math.random() * 100 < Number(P(acc, "followUpChance"))) {
+      const ts = st.buf[st.buf.length - 1]?.ts;
+      setTimeout(() => {
+        respond({ ...info, followUp: ts, target: { text: "(ကိုယ့်ဘက်က နောက်တစ်ခု ထပ်ပို့ချင်လို့ — အရင်စကားနဲ့ ဆက်စပ်တဲ့ စာတိုတစ်ခု သဘာဝကျကျ ထပ်ပို့ပါ၊ ပြောပြီးသားကို မထပ်နဲ့)" } }).catch((e) => console.error(`followup[${accName}]:`, e.message));
+      }, rnd(15000, 50000));
     }
   } catch (e) {
     incStat(accName, "failed");
@@ -573,6 +616,27 @@ async function respond(info) {
       }
     }
   }
+}
+
+// Telegram update တွေ ပျက်ကျန်ခဲ့ရင် (TIMEOUT) — မဖတ်ရသေးတဲ့ DM တွေကို ၂၅ စက္ကန့်တစ်ခါ ရှာပြီး ပြန်ဖြေ
+function startCatchup() {
+  setInterval(async () => {
+    for (const [name, acc] of Object.entries(accCache)) {
+      if (!acc.active || acc.dmOn === false) continue;
+      const client = clientPool[name];
+      if (!client || !client.connected) continue;
+      try {
+        const dialogs = await withTimeout(client.getDialogs({ limit: 25 }), 20000, "DIALOGS_TIMEOUT");
+        for (const d of dialogs) {
+          if (!d.isUser || !(d.unreadCount > 0) || d.entity?.bot) continue;
+          const m = d.message;
+          if (!m || m.out) continue;
+          if (m.date && Date.now() / 1000 - m.date < 8) continue; // ခုမှဝင်တာ — live handler ကို အရင်ပေး
+          await onMessage(name, { message: m, _catchup: true });
+        }
+      } catch (e) { console.log(`catchup[${name}]: ${e.message}`); }
+    }
+  }, 25 * 1000);
 }
 
 // ─── ADMIN UI ─────────────────────────────────────────────────────────────────
@@ -910,6 +974,7 @@ async function main() {
   await loadSettings();
   await initAllClients();
   startHealthCheck();
+  startCatchup();
   await bot.telegram.deleteWebhook({ drop_pending_updates: true });
 
   let launched = false, retry = 0;
