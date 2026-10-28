@@ -34,6 +34,9 @@ const PARAMS = [
   { k: "gapMax",       label: "🧘 ကိုယ့်စာနှစ်ခုကြား အများဆုံး (စက္ကန့်)", def: 25, min: 0,  max: 3600 },
   { k: "maxPerHour",   label: "🚦 GP တစ်ခုမှာ တစ်နာရီ အများဆုံးစာ",   def: 40,  min: 1,   max: 500 },
   { k: "historySize",  label: "🧠 မှတ်ထားမယ့် စာအရေအတွက်",          def: 12,  min: 2,   max: 40 },
+  { k: "dmDelayMin", label: "📩 DM ပြန်ချိန် အနည်းဆုံး (စက္ကန့်)",  def: 1,   min: 0,   max: 120 },
+  { k: "dmDelayMax", label: "📩 DM ပြန်ချိန် အများဆုံး (စက္ကန့်)",  def: 3,   min: 0,   max: 120 },
+  { k: "markRead",   label: "✔✔ စာဖတ်ပြီး (seen) အမှတ်ပြမယ်",      def: 1,   bool: true },
   { k: "dmChance",     label: "📩 DM စာပြန်ဖြစ်နိုင်ခြေ %",          def: 100, min: 0,   max: 100 },
   { k: "temperature",  label: "🌡 AI temperature (0–2)",            def: 0.9, min: 0,   max: 2, float: true },
   { k: "maxTokens",    label: "📏 ပြန်စာ အရှည်ဆုံး (token)",          def: 120, min: 20,  max: 600 },
@@ -196,7 +199,7 @@ const META_GROUP = (myName, direct) =>
   `Keep it short and natural like a real person typing. ` +
   (direct ? "Someone is talking directly to you, so you must answer (never output SKIP)." : "If there is nothing natural to say, output exactly: SKIP");
 const META_DM = (myName) =>
-  `\n\n[Rules] You are chatting privately as "${myName}". Output ONLY the message text you would send — no name prefix, no quotes. Keep it short and natural like a real person typing.`;
+  `\n\n[Rules] You are chatting privately as "${myName}". Output ONLY the message text you would send — no name prefix, no quotes. Keep it short and natural like a real person typing. The other person may send several short messages in a row: reply naturally to the newest message and do not repeat what you already said.`;
 
 function systemPrompt(acc) { return (acc?.customPrompt || S.prompt || DEFAULT_PROMPT); }
 
@@ -311,7 +314,7 @@ function startHealthCheck() {
 
 // ─── CHAT ENGINE ──────────────────────────────────────────────────────────────
 const PERMANENT_ERR = /USER_BANNED_IN_CHANNEL|CHAT_WRITE_FORBIDDEN|CHANNEL_PRIVATE|USER_KICKED|CHAT_SEND_PLAIN_FORBIDDEN|CHAT_RESTRICTED|CHAT_GUEST_SEND_FORBIDDEN|USER_NOT_PARTICIPANT/;
-const chatState = (accName, chatId) => (chats[`${accName}|${chatId}`] ||= { buf: [], lastOwn: 0, sent: [], pending: null, fails: 0, busyUntil: 0, ownMsgIds: new Set(), blockedUntil: 0 });
+const chatState = (accName, chatId) => (chats[`${accName}|${chatId}`] ||= { buf: [], lastOwn: 0, sent: [], pending: null, fails: 0, busyUntil: 0, ownMsgIds: new Set(), blockedUntil: 0, dmQueue: Promise.resolve() });
 const displayName = (s) => (s ? ([s.firstName, s.lastName].filter(Boolean).join(" ") || s.title || s.username || "user") : "user");
 
 function pushBuf(st, entry, accN) {
@@ -352,6 +355,7 @@ async function onMessage(accName, event) {
   const replyToId = msg.replyTo?.replyToMsgId;
   pushBuf(st, { id: msg.id, name, text: short(text, 500), own: false, ts: Date.now() }, Number(P(acc, "historySize")));
   if (!acc.active) return; // Stop ထားရင် မှတ်ပဲမှတ်၊ မပြောဘူး
+  if (isPrivate && Number(P(acc, "markRead"))) markRead(accName, msg, 300 + Math.random() * 700); // ✔✔ seen
 
   const direct = isPrivate || (replyToId && st.ownMsgIds.has(replyToId)) ||
     (me.username && text.toLowerCase().includes("@" + me.username.toLowerCase()));
@@ -367,7 +371,27 @@ async function onMessage(accName, event) {
     if (!isPrivate && Math.random() * 100 < Number(P(acc, "reactChance"))) scheduleReaction(info);
     return;
   }
+  if (isPrivate) { // DM: စာတစ်ခုချင်းစီကို အမြဲပြန် (coalesce မလုပ်)၊ တစ်ခုပြီးမှ တစ်ခု အစဉ်လိုက်
+    st.dmQueue = st.dmQueue.then(async () => {
+      if (!accCache[accName]?.active) return;
+      await sleep(rnd(Number(P(acc, "dmDelayMin")), Number(P(acc, "dmDelayMax"))) * 1000);
+      await respond(info);
+    }).catch((e) => console.error(`dm[${accName}]:`, e.message));
+    return;
+  }
   schedule(info);
+}
+
+// စာဖတ်ပြီး (✔✔ seen) အမှတ်ပြ
+function markRead(accName, msg, afterMs = 0) {
+  setTimeout(async () => {
+    try {
+      const client = clientPool[accName];
+      if (!client) return;
+      const peer = await msg.getInputChat();
+      await client.markAsRead(peer, msg.id, { clearMentions: true });
+    } catch (e) { console.log(`markRead[${accName}]: ${e.message}`); }
+  }, afterMs);
 }
 
 function schedule(info) {
@@ -408,10 +432,11 @@ async function respond(info) {
   const st = chatState(accName, chatId);
   const me = client._me || { name: "me", username: "" };
 
-  // hourly cap
+  // hourly cap (DM မှာ မသက်ရောက်)
   const now = Date.now();
   st.sent = st.sent.filter((t) => now - t < 3600e3);
-  if (st.sent.length >= Number(P(acc, "maxPerHour"))) { console.log(`engine[${accName}]: ${short(info.title, 20)} နာရီကန့်သတ်ပြည့် — ကျော်`); return; }
+  if (!info.isDm && Number(P(acc, "markRead")) && info.target?.id) { try { await client.markAsRead(info.peer, info.target.id, { clearMentions: true }); } catch (_) {} }
+  if (!info.isDm && st.sent.length >= Number(P(acc, "maxPerHour"))) { console.log(`engine[${accName}]: ${short(info.title, 20)} နာရီကန့်သတ်ပြည့် — ကျော်`); return; }
 
   const messages = info.isDm ? buildDmMessages(acc, st, me.name) : buildGroupMessages(acc, st, info.title, info.target, info.direct, me.name);
   const r = await callGroq(acc, messages);
@@ -421,7 +446,7 @@ async function respond(info) {
   if (!reply || isSkip(reply)) return;
 
   try { await client.invoke(new Api.messages.SetTyping({ peer: info.peer, action: new Api.SendMessageTypingAction() })); } catch (_) {}
-  await sleep(Math.min(3500, 400 + reply.length * 45));
+  await sleep(info.isDm ? Math.min(900, 200 + reply.length * 15) : Math.min(3500, 400 + reply.length * 45));
 
   const quote = !info.isDm && (info.direct || Math.random() * 100 < Number(P(acc, "quoteChance")));
   try {
