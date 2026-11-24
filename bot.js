@@ -9,11 +9,13 @@ const http = require("http");
 const https = require("https");
 
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
-const BOT_TOKEN = process.env.BOT_TOKEN;
-const API_ID    = parseInt(process.env.API_ID);
-const API_HASH  = process.env.API_HASH;
-const ADMIN_ID  = parseInt(process.env.ADMIN_ID);
-const MONGO_URI = process.env.MONGO_URI;
+// Render env ထဲ paste လုပ်တဲ့အခါ space / newline / " " ပါသွားတတ် — အကုန်ရှင်းပေး
+const cleanEnv  = (v) => String(v || "").trim().replace(/^["']+|["']+$/g, "").trim();
+const BOT_TOKEN = cleanEnv(process.env.BOT_TOKEN);
+const API_ID    = parseInt(cleanEnv(process.env.API_ID));
+const API_HASH  = cleanEnv(process.env.API_HASH);
+const ADMIN_ID  = parseInt(cleanEnv(process.env.ADMIN_ID));
+const MONGO_URI = cleanEnv(process.env.MONGO_URI);
 const GROQ_URL  = "https://api.groq.com/openai/v1/chat/completions";
 
 const EMOJI_GUIDE =
@@ -137,11 +139,48 @@ process.on("uncaughtException", (e) => console.error("uncaughtException:", e?.me
 
 // ─── MONGODB ──────────────────────────────────────────────────────────────────
 async function connectDB() {
-  const c = new MongoClient(MONGO_URI);
+  const c = new MongoClient(MONGO_URI, { serverSelectionTimeoutMS: 20000 });
   await c.connect();
   db = c.db("aiuserbot");
   console.log("✅ MongoDB connected!");
 }
+
+// ─── SINGLE-INSTANCE LOCK ─────────────────────────────────────────────────────
+// Session string တစ်ခုကို instance ၂ ခု (ဟောင်း service + အသစ် service / redeploy overlap) က တစ်ပြိုင်နက်သုံးရင်
+// Telegram က AUTH_KEY_DUPLICATED ပေးပြီး session ကို ထာဝရ logout လုပ်ပစ်တတ်တယ် — ဒါကို ကာဖို့ MongoDB lease lock
+const INSTANCE_ID = `${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+const LOCK_TTL = 45e3;
+async function tryLock() {
+  const now = Date.now();
+  try {
+    await db.collection("locks").updateOne(
+      { _id: "userbot", $or: [{ owner: INSTANCE_ID }, { beat: { $lt: now - LOCK_TTL } }] },
+      { $set: { owner: INSTANCE_ID, beat: now } },
+      { upsert: true }
+    );
+    return true;
+  } catch (e) { if (e.code === 11000) return false; throw e; } // duplicate key = တခြား instance က lock ကိုင်ထား
+}
+async function acquireLock() {
+  let warned = false;
+  for (;;) {
+    try { if (await tryLock()) break; } catch (e) { console.log(`lock: ${e.message}`); }
+    if (!warned) {
+      warned = true;
+      console.log("⏳ တခြား instance တစ်ခု ဒီ MongoDB နဲ့ account တွေကို သုံးနေတယ် — ပြီးတဲ့အထိ စောင့်နေသည်");
+      notify("⚠️ တခြား instance (ဟောင်း Render service / local စက်) တစ်ခု ဒီ MongoDB နဲ့ Telegram account တွေကို သုံးနေတယ်။\nအဲဒါကို Stop/Delete မလုပ်ရင် account တွေ မချိတ်ဘူး (session logout ခံရမှာ ကာဖို့)။").catch(() => {});
+    }
+    await sleep(5000);
+  }
+  console.log("🔒 Instance lock ရပြီ");
+  setInterval(async () => {
+    try {
+      const r = await db.collection("locks").updateOne({ _id: "userbot", owner: INSTANCE_ID }, { $set: { beat: Date.now() } });
+      if (!r.matchedCount) { console.error("❌ Instance lock ပျောက် (တခြား instance ယူသွား) — ရပ်လိုက်မယ်"); process.exit(1); }
+    } catch (e) { console.log(`lock heartbeat: ${e.message}`); }
+  }, 15e3);
+}
+
 async function loadSettings() {
   const s = (await db.collection("settings").findOne({ _id: "main" })) || {};
   Object.assign(S, { prompt: s.prompt || "", model: s.model || S.model, notifyOn: s.notifyOn !== false, groqKeys: s.groqKeys || [], defaults: s.defaults || {} });
@@ -366,16 +405,23 @@ async function buildClient(sessionString, accName) {
     connectionRetries: 10, retryDelay: 2000, autoReconnect: true, requestRetries: 5,
     useWSS: process.env.TG_USE_WSS === "1", // port 443 WebSocket — TIMEOUT များရင် Render env မှာ TG_USE_WSS=1 ထည့်ကြည့်
   });
-  await client.connect();
-  let me;
-  try { me = await client.getMe(); } catch (e) { try { await client.disconnect(); } catch (_) {} throw e; }
-  if (me?.id) ownIds.add(me.id.toString());
-  client._me = { id: me.id?.toString(), username: me.username || "", name: [me.firstName, me.lastName].filter(Boolean).join(" ") || me.username || "me" };
-  try { await client.getDialogs({ limit: 200 }); } catch (e) { console.error(`getDialogs[${accName}]:`, e.message); }
-  client.addEventHandler((event) => {
-    onMessage(accName, event).catch((e) => console.error(`msg[${accName}]:`, e.message));
-  }, new NewMessage({}));
-  return client;
+  try { client.setLogLevel("error"); } catch (_) {}
+  try {
+    // connect / getMe ဟာ session သေရင် ဒါမှမဟုတ် network ကျရင် ထာဝရ ရပ်နေတတ် → timeout ခံ (မဟုတ်ရင် bot တစ်ခုလုံး မစတင်)
+    await withTimeout(client.connect(), 60000, "CONNECT_TIMEOUT");
+    const me = await withTimeout(client.getMe(), 30000, "GETME_TIMEOUT");
+    if (!me) throw new Error("AUTH_KEY_UNREGISTERED (getMe ဗလာ)");
+    if (me.id) ownIds.add(me.id.toString());
+    client._me = { id: me.id?.toString(), username: me.username || "", name: [me.firstName, me.lastName].filter(Boolean).join(" ") || me.username || "me" };
+    try { await withTimeout(client.getDialogs({ limit: 200 }), 45000, "DIALOGS_TIMEOUT"); } catch (e) { console.error(`getDialogs[${accName}]:`, e.message); }
+    client.addEventHandler((event) => {
+      onMessage(accName, event).catch((e) => console.error(`msg[${accName}]:`, e.message));
+    }, new NewMessage({}));
+    return client;
+  } catch (e) {
+    await killClient(client); // မအောင်ရင် client ကို အပြီးရှင်း — မဟုတ်ရင် background မှာ reconnect loop ဆက်ပတ်နေပြီး crash/log spam ဖြစ်
+    throw e;
+  }
 }
 async function initAllClients() {
   for (const acc of await getAccounts()) {
@@ -389,43 +435,77 @@ async function initAllClients() {
       buildMonitor(acc.name).catch(() => {});
     } catch (e) {
       console.error(`❌ Failed: ${acc.name} — ${e.message}`);
-      if (DEAD_SESSION_ERR.test(e.message || "")) {
-        await saveAccount(acc.name, { deadSession: acc.sessionString, deadReason: e.message }).catch(() => {});
-        notify(`🔑 [${acc.name}] Session သုံးမရတော့ပါ (${e.message})\nTelegram ဘက်က logout/revoke လုပ်ထားတာဖြစ်နိုင်သည်။ \`node get-session.js\` နဲ့ session အသစ်ထုတ်ပြီး ➕ Account ကနေ ပြန်ထည့်ပါ။`).catch(() => {});
-      }
+      if (isDeadErr(e)) await markDead(acc, e);
     }
   }
 }
 async function reconnectAccount(acc) {
-  if (clientPool[acc.name]) { try { await withTimeout(clientPool[acc.name].disconnect(), 10000, "DISCONNECT_TIMEOUT"); } catch (_) {} delete clientPool[acc.name]; }
-  clientPool[acc.name] = await buildClient(acc.sessionString, acc.name);
+  const old = clientPool[acc.name];
+  if (old) { delete clientPool[acc.name]; await killClient(old); }
+  try { clientPool[acc.name] = await buildClient(acc.sessionString, acc.name); }
+  catch (e) { if (isDeadErr(e)) await markDead(acc, e); throw e; }
   delete monitor[acc.name];
   buildMonitor(acc.name).catch(() => {});
 }
 const lastGroqAlert = {};
 const pingFails = {};
+const lastRecon = {};
+let hcBusy = false;
 function startHealthCheck() {
   setInterval(async () => {
-    for (const acc of await getAccounts()) {
-      const client = clientPool[acc.name];
-      if (!client) continue;
-      let alive = !!client.connected;
-      if (alive) {
-        try { await withTimeout(client.getMe(), 25000, "PING_TIMEOUT"); }
-        catch (e) { alive = false; console.log(`healthcheck[${acc.name}]: ping မအောင်မြင် (${e.message})`); }
+    if (hcBusy) return;
+    hcBusy = true;
+    try {
+      let accs; try { accs = await getAccounts(); } catch (e) { console.log(`healthcheck: DB — ${e.message}`); return; }
+      for (const acc of accs) {
+        try {
+          const client = clientPool[acc.name];
+          if (!client) { // pool ထဲမရှိ (reconnect မအောင်ခဲ့ / network ကျခဲ့) — session မသေရင် ၅ မိနစ်တစ်ခါ ပြန်ကြိုးစား
+            if (acc.deadSession && acc.deadSession === acc.sessionString) continue;
+            if (Date.now() - (lastRecon[acc.name] || 0) < 5 * 60e3) continue;
+            lastRecon[acc.name] = Date.now();
+            try { await withTimeout(reconnectAccount(acc), 150000, "RECONNECT_TIMEOUT"); console.log(`healthcheck[${acc.name}]: ပြန်ချိတ်အောင်မြင်`); }
+            catch (e) { console.error(`healthcheck[${acc.name}] reconnect: ${e.message}`); }
+            continue;
+          }
+          let alive = !!client.connected;
+          if (alive) {
+            try { await withTimeout(client.getMe(), 25000, "PING_TIMEOUT"); }
+            catch (e) {
+              alive = false; console.log(`healthcheck[${acc.name}]: ping မအောင်မြင် (${e.message})`);
+              if (isDeadErr(e)) { await markDead(acc, e); continue; } // logout/revoke ခံရပြီ — reconnect လုပ်လို့မရ
+            }
+          }
+          if (alive) { pingFails[acc.name] = 0; continue; }
+          pingFails[acc.name] = (pingFails[acc.name] || 0) + 1;
+          if (pingFails[acc.name] < 2) continue; // တစ်ခါလောက် နှေးတာနဲ့ reconnect မလုပ် — ဆက်တိုက် ၂ ကြိမ်မှ
+          console.log(`healthcheck[${acc.name}]: reconnect လုပ်နေသည်`);
+          try { await withTimeout(reconnectAccount(acc), 150000, "RECONNECT_TIMEOUT"); pingFails[acc.name] = 0; console.log(`healthcheck[${acc.name}]: reconnect အောင်မြင်`); }
+          catch (e) { console.error(`healthcheck[${acc.name}]: ${e.message}`); }
+        } catch (e) { console.error(`healthcheck[${acc.name}]: ${e.message}`); }
       }
-      if (alive) { pingFails[acc.name] = 0; continue; }
-      pingFails[acc.name] = (pingFails[acc.name] || 0) + 1;
-      if (pingFails[acc.name] < 2) continue; // တစ်ခါလောက် နှေးတာနဲ့ reconnect မလုပ် — ဆက်တိုက် ၂ ကြိမ်မှ
-      console.log(`healthcheck[${acc.name}]: reconnect လုပ်နေသည်`);
-      try { await withTimeout(reconnectAccount(acc), 60000, "RECONNECT_TIMEOUT"); pingFails[acc.name] = 0; console.log(`healthcheck[${acc.name}]: reconnect အောင်မြင်`); }
-      catch (e) { console.error(`healthcheck[${acc.name}]: ${e.message}`); }
-    }
+    } finally { hcBusy = false; }
   }, 60 * 1000);
 }
 
 // ─── CHAT ENGINE ──────────────────────────────────────────────────────────────
-const DEAD_SESSION_ERR = /SESSION_REVOKED|AUTH_KEY_UNREGISTERED|AUTH_KEY_DUPLICATED|USER_DEACTIVATED|SESSION_EXPIRED/;
+const DEAD_SESSION_ERR = /SESSION_REVOKED|AUTH_KEY_UNREGISTERED|AUTH_KEY_DUPLICATED|AUTH_KEY_INVALID|USER_DEACTIVATED|SESSION_EXPIRED|SESSION_PASSWORD_NEEDED/;
+const isDeadErr = (e) => DEAD_SESSION_ERR.test(`${e?.errorMessage || ""} ${e?.message || ""}`);
+async function killClient(client) { // client ကို လုံးဝရှင်း (hang မဖြစ်အောင် timeout နဲ့)
+  if (!client) return;
+  try { await withTimeout(client.disconnect(), 8000, "DISCONNECT_TIMEOUT"); } catch (_) {}
+  try { if (typeof client.destroy === "function") await withTimeout(client.destroy(), 8000, "DESTROY_TIMEOUT"); } catch (_) {}
+}
+async function markDead(acc, e) {
+  const already = acc.deadSession && acc.deadSession === acc.sessionString;
+  const reason = short(e?.errorMessage || e?.message || String(e), 100);
+  if (clientPool[acc.name]) { const c = clientPool[acc.name]; delete clientPool[acc.name]; await killClient(c); }
+  clearPending(acc.name);
+  await saveAccount(acc.name, { deadSession: acc.sessionString, deadReason: reason, active: false }).catch(() => {});
+  if (!already) {
+    notify(`🔑 [${acc.name}] Session သုံးမရတော့ပါ (${reason})\nTelegram ဘက်က logout/revoke လုပ်ထားတာ (သို့) session ကို နေရာ ၂ ခုက တစ်ပြိုင်နက်သုံးလို့ ပျက်တာဖြစ်နိုင်။\n\`node get-session.js\` နဲ့ session အသစ်ထုတ်ပြီး 👤 Accounts → [${acc.name}] → 🔑 Session အသစ်ထည့် နဲ့ ပြန်ထည့်ပါ။ (ပြီးရင် ▶️ Start ပြန်နှိပ်)`).catch(() => {});
+  }
+}
 const PERMANENT_ERR = /USER_BANNED_IN_CHANNEL|CHAT_WRITE_FORBIDDEN|CHANNEL_PRIVATE|USER_KICKED|CHAT_SEND_PLAIN_FORBIDDEN|CHAT_RESTRICTED|CHAT_GUEST_SEND_FORBIDDEN|USER_NOT_PARTICIPANT/;
 const chatState = (accName, chatId) => (chats[`${accName}|${chatId}`] ||= { buf: [], lastOwn: 0, sent: [], pending: null, fails: 0, busyUntil: 0, ownMsgIds: new Set(), blockedUntil: 0, dmQueue: Promise.resolve(), handled: new Set() });
 const displayName = (s) => (s ? ([s.firstName, s.lastName].filter(Boolean).join(" ") || s.title || s.username || "user") : "user");
@@ -604,6 +684,13 @@ async function respond(info) {
       }
     }
   }
+  // model ပျက်/ဖျက်လိုက်တာ (decommissioned / not found) ဆိုရင် တခြား model နဲ့ အလိုအလျောက် ပြောင်းစမ်း
+  if (r.error && r.error !== "NO_KEY" && /model|decommission|not.?found|404|does not exist/i.test(r.error)) {
+    for (const fm of (await fallbackModels(acc, S.model)).slice(0, 3)) {
+      const r2 = await callGroq(acc, messages, { model: fm });
+      if (!r2.error && String(r2.text || "").trim()) { console.log(`engine[${accName}]: model error → fallback ${fm} အလုပ်လုပ်`); r = r2; break; }
+    }
+  }
   if (r.error) {
     console.error(`groq[${accName}]: ${r.error}`);
     if (r.error !== "NO_KEY") {
@@ -760,7 +847,13 @@ function startCatchup() {
 }
 
 // ─── ADMIN UI ─────────────────────────────────────────────────────────────────
-bot.use((ctx, next) => (ctx.from?.id === ADMIN_ID ? next() : undefined));
+bot.use((ctx, next) => {
+  if (ctx.from?.id === ADMIN_ID) return next();
+  console.log(`⛔ Admin မဟုတ်လို့ ကျော် — from.id=${ctx.from?.id} (ADMIN_ID=${ADMIN_ID})`);
+  if (ctx.chat?.type === "private" && /^\/start/.test(ctx.message?.text || "")) {
+    return ctx.reply(`⛔ ဒီ bot ကို Admin ပဲ သုံးလို့ရတယ်\nမင်း Telegram ID: ${ctx.from.id}\n(Render env ADMIN_ID ကို ဒီ ID နဲ့ တူအောင်ထားပြီး redeploy လုပ်ပါ)`).catch(() => {});
+  }
+});
 
 async function render(ctx, text, rows) {
   const extra = { reply_markup: { inline_keyboard: rows } };
@@ -807,6 +900,8 @@ async function showAccount(ctx, acc, note) {
   const st = acc.stats || {};
   let t = `👤 ${acc.name}\n${clientPool[acc.name] ? "🟢 Connected" : "🔴 Disconnected (🔄 Reconnect နှိပ်ပါ)"} · ${acc.active ? "💬 Chat ဖွင့်ထား" : "⏹ ရပ်ထား"}\n`;
   if (note) t += `\n${note}\n`;
+  const dead = !!(acc.deadSession && acc.deadSession === acc.sessionString);
+  if (dead) t += `\n🔑 Session သေနေ (${acc.deadReason || "logout/revoke"}) — session အသစ်ထုတ်ပြီး အောက်က ခလုတ်နဲ့ ထည့်ပါ\n`;
   t += `\n🔑 Account keys: ${(acc.groqKeys || []).length} (+ global ${(S.groqKeys || []).length})`;
   t += `\n✏️ Prompt: ${acc.customPrompt ? "custom (ဒီ account သီးသန့်)" : S.prompt ? "global" : "default"}`;
   t += `\n📩 DM: ${acc.dmOn === false ? "⚪ ပိတ်" : "🟢 ဖွင့်"} · 🔔 Noti: ${acc.notifyOn === false ? "🔕 ပိတ်" : "🟢 ဖွင့်"}`;
@@ -821,6 +916,7 @@ async function showAccount(ctx, acc, note) {
     [btn("⚙️ Settings", `a:${id}:params`), btn("🧪 AI Test", `a:${id}:test`)],
     [btn(acc.dmOn === false ? "📩 DM ဖွင့်မယ်" : "📩 DM ပိတ်မယ်", `a:${id}:dm`), btn(acc.notifyOn === false ? "🔔 Noti ဖွင့်" : "🔕 Noti ပိတ်", `a:${id}:noti`)],
   ];
+  if (dead) rows.unshift([btn("🔑 Session အသစ်ထည့်", `a:${id}:sess`)]);
   if ((acc.blocked || []).length) rows.push([btn(`♻️ Blocked GP ${(acc.blocked || []).length} ခု ပြန်ဖွင့်`, `a:${id}:unb`)]);
   rows.push([btn("🔄 Reconnect", `a:${id}:rc`), btn("🗑 Account ဖျက်", `a:${id}:del`)], [btn("⬅️ Accounts", "accs")]);
   return render(ctx, t, rows);
@@ -894,22 +990,28 @@ async function globalRoute(ctx, [act, arg, arg2]) {
   switch (act) {
     case "diag": {
       await render(ctx, "🩺 စစ်ဆေးနေသည်… (၁ မိနစ်ခန့်ကြာနိုင်)", []);
-      let t = `🩺 Diagnose\n🧠 Model: ${S.model}\n`;
-      for (const a of await getAccounts()) {
-        t += `\n👤 ${a.name} — ${a.active ? "💬 chat ဖွင့်" : "⏹ ရပ်ထား"}`;
-        const c = clientPool[a.name];
-        if (!c) { t += "\n  🔴 Telegram မချိတ်ဘူး (Reconnect နှိပ်ပါ)"; continue; }
-        let t0 = Date.now();
-        try { await withTimeout(c.getMe(), 15000, "timeout"); t += `\n  🟢 Telegram ဖြေ ${Date.now() - t0}ms`; } catch (e) { t += `\n  🔴 Telegram မဖြေ (${e.message})`; }
-        const cands = keyCandidates(a);
-        t += `\n  🔑 သုံးလို့ရတဲ့ key ${cands.length} ခု`;
-        if (cands.length) {
-          t0 = Date.now();
-          const r = await callGroq(a, [{ role: "user", content: "Say hi in one short word." }]);
-          t += r.error ? `\n  🔴 Groq error: ${short(r.error, 160)}` : `\n  🟢 Groq ဖြေ ${Date.now() - t0}ms — "${short(r.text, 30)}"`;
-        }
-      }
-      return render(ctx, t, [[btn("🔁 ထပ်စစ်", "g:diag")], [btn("⬅️ Home", "home")]]);
+      (async () => {
+        try {
+          let t = `🩺 Diagnose\n🧠 Model: ${S.model}\n🤖 Bot: @${bot.botInfo?.username} · ADMIN_ID ${ADMIN_ID}\n`;
+          for (const a of await getAccounts()) {
+            t += `\n👤 ${a.name} — ${a.active ? "💬 chat ဖွင့်" : "⏹ ရပ်ထား"}`;
+            if (a.deadSession && a.deadSession === a.sessionString) { t += `\n  🔑 Session သေနေ (${a.deadReason || ""}) — session အသစ်လို`; continue; }
+            const c = clientPool[a.name];
+            if (!c) { t += "\n  🔴 Telegram မချိတ်ဘူး (Reconnect နှိပ်ပါ)"; continue; }
+            let t0 = Date.now();
+            try { await withTimeout(c.getMe(), 15000, "timeout"); t += `\n  🟢 Telegram ဖြေ ${Date.now() - t0}ms`; } catch (e) { t += `\n  🔴 Telegram မဖြေ (${e.message})`; }
+            const cands = keyCandidates(a);
+            t += `\n  🔑 သုံးလို့ရတဲ့ key ${cands.length} ခု`;
+            if (cands.length) {
+              t0 = Date.now();
+              const r = await callGroq(a, [{ role: "user", content: "Say hi in one short word." }]);
+              t += r.error ? `\n  🔴 Groq error: ${short(r.error, 160)}` : `\n  🟢 Groq ဖြေ ${Date.now() - t0}ms — "${short(r.text, 30)}"`;
+            }
+          }
+          await render(ctx, t, [[btn("🔁 ထပ်စစ်", "g:diag")], [btn("⬅️ Home", "home")]]);
+        } catch (e) { console.error("diag:", e.message); ctx.reply(`❌ ${e.message}`).catch(() => {}); }
+      })();
+      return;
     }
     case "noti": await saveSettings({ notifyOn: !S.notifyOn }); return showHome(ctx);
     case "startall": await doStartAll(true); return showHome(ctx, "▶️ အကုန် Start လုပ်ပြီး");
@@ -942,6 +1044,7 @@ async function accRoute(ctx, [id, action, arg]) {
       await saveAccount(acc.name, { active: on }); if (!on) clearPending(acc.name);
       return showAccount(ctx, acc, on ? "▶️ Chat စတင်ပြီး" : "⏹ Chat ရပ်ပြီး");
     }
+    case "sess": setAwait("addacc_sess", { name: acc.name, update: true }); return render(ctx, `🔑 [${acc.name}] Session String အသစ် paste လုပ်ပါ\n(GP, key, setting တွေ မပျက်ဘူး)`, cancelRows);
     case "dm": await saveAccount(acc.name, { dmOn: acc.dmOn === false }); return showAccount(ctx, acc);
     case "noti": await saveAccount(acc.name, { notifyOn: acc.notifyOn === false }); return showAccount(ctx, acc);
     case "unb": await saveAccount(acc.name, { blocked: [] }); return showAccount(ctx, acc, "♻️ ပြန်ဖွင့်ပြီး");
@@ -963,14 +1066,20 @@ async function accRoute(ctx, [id, action, arg]) {
       const gps = acc.gpLinks || [];
       if (!gps.length) return showAccount(ctx, acc, "GP မရှိပါ");
       await render(ctx, `🤝 Join လုပ်နေသည်… (${gps.length} ခု)`, []);
-      const out = [];
-      for (const l of gps) {
-        try { await joinGroup(client, l); out.push(`✅ ${short(l, 36)}`); }
-        catch (e) { out.push(/ALREADY|USER_ALREADY_PARTICIPANT/i.test(e.message) ? `✅ ${short(l, 36)} (ဝင်ပြီးသား)` : `❌ ${short(l, 36)} — ${short(e.message, 40)}`); }
-        await sleep(3000);
-      }
-      delete monitor[acc.name]; await buildMonitor(acc.name).catch(() => {});
-      return showAccount(ctx, acc, out.join("\n"));
+      // Telegraf က update တွေကို တစ်ခုပြီးမှ တစ်ခု လုပ် — ကြာတဲ့ job ကို background ပို့မှ bot တခြားခလုတ်တွေ မရပ်မှာ
+      (async () => {
+        try {
+          const out = [];
+          for (const l of gps) {
+            try { await joinGroup(client, l); out.push(`✅ ${short(l, 36)}`); }
+            catch (e) { out.push(/ALREADY|USER_ALREADY_PARTICIPANT/i.test(e.message) ? `✅ ${short(l, 36)} (ဝင်ပြီးသား)` : `❌ ${short(l, 36)} — ${short(e.message, 40)}`); }
+            await sleep(3000);
+          }
+          delete monitor[acc.name]; await buildMonitor(acc.name).catch(() => {});
+          await showAccount(ctx, acc, out.join("\n"));
+        } catch (e) { console.error(`join[${acc.name}]:`, e.message); ctx.reply(`❌ ${e.message}`).catch(() => {}); }
+      })();
+      return;
     }
     case "keys": return showKeys(ctx, acc);
     case "kadd": setAwait("key_add", { scope: "a", id }); return render(ctx, `🔑 [${acc.name}] Groq API key(s) ပို့ပါ\n(တစ်ကြောင်းကို key တစ်ခု၊ များစွာ တစ်ခါတည်း paste လို့ရ)`, cancelRows);
@@ -990,13 +1099,16 @@ async function accRoute(ctx, [id, action, arg]) {
     case "ppre": if (PRESETS[arg]) await saveAccount(acc.name, { customPrompt: PRESETS[arg] }); return showPrompt(ctx, await getAccById(id));
     case "test": setAwait("test", { id }); return render(ctx, `🧪 [${acc.name}] စမ်းမယ့်စာ ရိုက်ပို့ပါ — တခြားသူပြောတယ်လို့ သဘောထားပြီး AI ဘယ်လိုပြန်မလဲ ပြမယ်`, cancelRows);
     case "rc":
-      await render(ctx, "🔄 Reconnect လုပ်နေသည်…", []);
-      try { await reconnectAccount(acc); return showAccount(ctx, acc, "✅ Reconnect အောင်မြင်"); }
-      catch (e) { return showAccount(ctx, acc, `❌ ${e.message}`); }
+      await render(ctx, "🔄 Reconnect လုပ်နေသည်… (၁ မိနစ်ခန့်ကြာနိုင်)", []);
+      (async () => {
+        try { await reconnectAccount(acc); await showAccount(ctx, acc, "✅ Reconnect အောင်မြင်"); }
+        catch (e) { await showAccount(ctx, acc, `❌ ${short(e.message, 200)}${isDeadErr(e) ? "\n🔑 Session သေနေပြီ — 🔑 Session အသစ်ထည့်ပါ" : ""}`).catch(() => {}); }
+      })();
+      return;
     case "del":
       if (arg !== "y") return render(ctx, `🗑 [${acc.name}] ကို ဖျက်မှာ သေချာလား?`, [[btn("✅ ဖျက်မယ်", `a:${id}:del:y`)], ...back]);
       clearPending(acc.name);
-      if (clientPool[acc.name]) { try { await clientPool[acc.name].disconnect(); } catch (_) {} delete clientPool[acc.name]; }
+      if (clientPool[acc.name]) { const c = clientPool[acc.name]; delete clientPool[acc.name]; await killClient(c); }
       await db.collection("accounts").deleteOne({ name: acc.name }); delete accCache[acc.name];
       return showAccounts(ctx);
   }
@@ -1011,25 +1123,35 @@ bot.on("text", async (ctx) => {
   try {
     switch (aw.type) {
       case "addacc_name": {
-        if (await db.collection("accounts").findOne({ name: text })) return ctx.reply("⚠️ ဒီနာမည် ရှိပြီးသား၊ တခြားနာမည်ပေးပါ");
+        if (await db.collection("accounts").findOne({ name: text })) { // ရှိပြီးသား → session အသစ်အစားထိုးမယ် (account ဖျက်စရာမလို)
+          setAwait("addacc_sess", { name: text, update: true });
+          return ctx.reply(`🔑 [${text}] ရှိပြီးသားပါ — Session String အသစ် paste လုပ်ရင် အစားထိုးမယ် (GP, key, setting တွေ မပျက်ဘူး)`, { reply_markup: { inline_keyboard: cancelRows } });
+        }
         setAwait("addacc_sess", { name: text });
         return ctx.reply(`🔑 [${text}] ရဲ့ Session String ကို paste လုပ်ပါ\n(get-session.js နဲ့ ထုတ်ထားတာ)`, { reply_markup: { inline_keyboard: cancelRows } });
       }
       case "addacc_sess": {
         ctx.deleteMessage().catch(() => {}); // session string ကို chat ထဲက ဖျက်
-        const wait = await ctx.reply("⏳ ချိတ်ဆက်နေသည်…");
-        try {
-          const client = await buildClient(text, aw.name);
-          clientPool[aw.name] = client;
-          await db.collection("accounts").insertOne({ name: aw.name, sessionString: text, active: false, gpLinks: [], groqKeys: [], customPrompt: "", params: {}, stats: {}, addedAt: new Date() });
-          await refreshAcc(aw.name);
-          awaiting = null;
-          const a = accCache[aw.name];
-          await bot.telegram.editMessageText(ctx.chat.id, wait.message_id, undefined, `✅ ${aw.name} (${client._me.name}) ချိတ်ပြီး\n\nGP, Groq key ထည့်ပြီး ▶️ Start နှိပ်ပါ`, { reply_markup: { inline_keyboard: [[btn("👤 Account ဖွင့်", `a:${a._id}`)]] } });
-        } catch (e) {
-          awaiting = null;
-          await bot.telegram.editMessageText(ctx.chat.id, wait.message_id, undefined, `❌ ချိတ်မရ: ${e.message}`, { reply_markup: { inline_keyboard: [[btn("⬅️ Home", "home")]] } });
-        }
+        const sess = text.replace(/\s+/g, "");
+        const wait = await ctx.reply("⏳ ချိတ်ဆက်နေသည်… (၁ မိနစ်ခန့်ကြာနိုင်)");
+        // ကြာတဲ့ အလုပ်ကို background — bot ကို မပိတ်ဖို့
+        (async () => {
+          try {
+            if (aw.update) { const old = clientPool[aw.name]; if (old) { delete clientPool[aw.name]; await killClient(old); } }
+            const client = await buildClient(sess, aw.name);
+            clientPool[aw.name] = client;
+            if (aw.update) await db.collection("accounts").updateOne({ name: aw.name }, { $set: { sessionString: sess }, $unset: { deadSession: "", deadReason: "" } });
+            else await db.collection("accounts").insertOne({ name: aw.name, sessionString: sess, active: false, gpLinks: [], groqKeys: [], customPrompt: "", params: {}, stats: {}, addedAt: new Date() });
+            await refreshAcc(aw.name);
+            delete monitor[aw.name]; buildMonitor(aw.name).catch(() => {});
+            if (awaiting === aw) awaiting = null;
+            const a = accCache[aw.name];
+            await bot.telegram.editMessageText(ctx.chat.id, wait.message_id, undefined, `✅ ${aw.name} (${client._me.name}) ချိတ်ပြီး\n\n${aw.update ? "▶️ Start ပြန်နှိပ်ပါ" : "GP, Groq key ထည့်ပြီး ▶️ Start နှိပ်ပါ"}`, { reply_markup: { inline_keyboard: [[btn("👤 Account ဖွင့်", `a:${a._id}`)]] } });
+          } catch (e) {
+            if (awaiting === aw) awaiting = null;
+            await bot.telegram.editMessageText(ctx.chat.id, wait.message_id, undefined, `❌ ချိတ်မရ: ${short(e.message, 200)}${isDeadErr(e) ? "\n🔑 ဒီ session သေနေပြီ — get-session.js နဲ့ အသစ်ထုတ်ပါ" : ""}`, { reply_markup: { inline_keyboard: [[btn("⬅️ Home", "home")]] } }).catch(() => {});
+          }
+        })();
         return;
       }
       case "gp_add": {
@@ -1079,9 +1201,24 @@ bot.on("text", async (ctx) => {
 bot.catch((err) => console.error("Bot error:", err));
 
 // ─── KEEP ALIVE + MAIN ────────────────────────────────────────────────────────
+let shuttingDown = false;
+async function shutdown(sig) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`${sig} — ပိတ်နေသည်…`);
+  setTimeout(() => process.exit(0), 12000).unref();
+  try { bot.stop(sig); } catch (_) {}
+  try { if (db) await db.collection("locks").deleteOne({ _id: "userbot", owner: INSTANCE_ID }); } catch (_) {} // lock ချက်ချင်းလွှတ် → deploy အသစ်က မစောင့်ရ
+  await Promise.all(Object.values(clientPool).map((c) => killClient(c)));
+  process.exit(0);
+}
+
 async function main() {
   for (const [k, v] of Object.entries({ BOT_TOKEN, API_ID, API_HASH, ADMIN_ID, MONGO_URI })) {
     if (!v) { console.error(`❌ Environment ထဲမှာ ${k} မရှိပါ (.env.example ကိုကြည့်ပါ)`); process.exit(1); }
+  }
+  if (!/^\d{5,}:[A-Za-z0-9_-]{20,}$/.test(BOT_TOKEN)) {
+    console.error("❌ BOT_TOKEN ပုံစံမှားနေတယ် (ဥပမာ 123456789:AAxxxxxxxx...) — BotFather က token အတိုင်း အပြည့်အစုံ copy လုပ်ပြီး Render env မှာ ပြန်ထည့်ပါ"); process.exit(1);
   }
   const PORT = process.env.PORT || 3000;
   http.createServer((req, res) => { res.writeHead(200); res.end("AI Userbot OK"); }).listen(PORT, () => console.log(`🌐 Port ${PORT}`));
@@ -1090,37 +1227,42 @@ async function main() {
     (url.startsWith("https:") ? https : http).get(url, (r) => { r.resume(); }).on("error", (e) => console.error("keepalive:", e.message));
   }, 14 * 60 * 1000);
 
-  await connectDB();
+  try { await connectDB(); }
+  catch (e) { console.error(`❌ MongoDB ချိတ်မရ: ${e.message}\n   → MONGO_URI မှန်လား၊ Atlas > Network Access မှာ 0.0.0.0/0 ခွင့်ပြုထားလား စစ်ပါ`); process.exit(1); }
   await loadSettings();
-  await initAllClients();
-  startHealthCheck();
-  startCatchup();
-  startGroupPoll();
-  startAutoChat();
-  // deleteWebhook ကို rate-limit (429) ထိနေလို့ — webhook တကယ်ရှိမှသာ ဖျက်၊ မရှိရင် မခေါ်ဘူး
-  let needDelete = true;
-  try { needDelete = !!(await bot.telegram.getWebhookInfo()).url; } catch (_) {}
-  if (needDelete) {
-    for (let i = 0; i < 8; i++) {
-      try { await bot.telegram.deleteWebhook({ drop_pending_updates: true }); break; }
-      catch (err) {
-        const ra = err.response?.parameters?.retry_after;
-        if (err.response?.error_code === 429 && i < 7) { console.log(`⏳ deleteWebhook 429 — ${ra || 10}s စောင့်မယ်...`); await sleep(((ra || 10) + 1) * 1000); }
-        else throw err;
-      }
+
+  // (၁) Bot token စစ် — 401 ဆိုရင် token မှား/revoke ခံရ၊ ရှင်းရှင်းပြပြီး ရပ် (အရင်က ဒီမှာ ထာဝရ loop ပတ်နေလို့ bot ဘာမှမပြန်တာ)
+  for (;;) {
+    try { bot.botInfo = await bot.telegram.getMe(); break; }
+    catch (err) {
+      const code = err.response?.error_code;
+      if (code === 401) { console.error("❌ BOT_TOKEN မှားနေ/revoke ခံထားရ (401 Unauthorized) — BotFather က token ပြန်စစ်ပြီး Render env BOT_TOKEN ပြင်၊ redeploy လုပ်ပါ"); process.exit(1); }
+      const ra = err.response?.parameters?.retry_after || 5;
+      console.log(`getMe မအောင် (${err.message}) — ${ra}s နောက်ပြန်ကြိုးစား`); await sleep((ra + 1) * 1000);
     }
   }
+  console.log(`🤖 Bot: @${bot.botInfo.username} · ADMIN_ID=${ADMIN_ID} (ဒီ ID နဲ့ /start လုပ်မှ panel ပေါ်မယ်)`);
+
+  // (၂) webhook ရှိရင်ဖျက် (မအောင်လည်း မရပ်)
+  try {
+    if ((await bot.telegram.getWebhookInfo()).url) {
+      for (let i = 0; i < 8; i++) {
+        try { await bot.telegram.deleteWebhook({ drop_pending_updates: true }); break; }
+        catch (err) {
+          const ra = err.response?.parameters?.retry_after;
+          if (err.response?.error_code === 429 && i < 7) { console.log(`⏳ deleteWebhook 429 — ${ra || 10}s စောင့်မယ်...`); await sleep(((ra || 10) + 1) * 1000); }
+          else throw err;
+        }
+      }
+    }
+  } catch (e) { console.log("webhook:", e.message); }
   // စောင့်နေတဲ့ စာဟောင်းတွေ (/start အများကြီး) ကို ကျော်
   try {
     const u = await bot.telegram.callApi("getUpdates", { offset: -1, limit: 1, timeout: 0 });
     if (u.length) await bot.telegram.callApi("getUpdates", { offset: u[0].update_id + 1, limit: 1, timeout: 0 });
   } catch (e) { console.log("skip-pending:", e.message); }
 
-  // bot.launch() က deleteWebhook ကို ကိုယ်တိုင်ပြန်ခေါ်လို့ 429 ထပ်ရတယ် — polling ကို တိုက်ရိုက်စတင်
-  for (let i = 0; ; i++) {
-    try { bot.botInfo = await bot.telegram.getMe(); break; }
-    catch (err) { const ra = err.response?.parameters?.retry_after || 5; console.log(`getMe မအောင် (${err.message}) — ${ra}s နောက်ပြန်ကြိုးစား`); await sleep((ra + 1) * 1000); }
-  }
+  // (၃) Admin bot ကို ချက်ချင်း polling စ — Telegram account တွေ ချိတ်တာ ကြာ/ပျက်လည်း /start ပြန်ရမယ်
   (async () => {
     let retry = 0;
     for (;;) {
@@ -1129,15 +1271,28 @@ async function main() {
         const code = err.response?.error_code;
         retry++;
         const wait = code === 429 ? (err.response?.parameters?.retry_after || 10) + 1 : 5;
-        console.log(`⚠️ polling error ${code || ""} ${err.message} — retry ${retry} in ${wait}s...`);
+        console.log(`⚠️ polling error ${code || ""} ${err.message} — retry ${retry} in ${wait}s...${code === 409 ? "\n   (409 = ဒီ BOT_TOKEN ကို တခြား instance/စက်က polling လုပ်နေတယ် — ဟောင်း service ကို ရပ်ပါ)" : ""}`);
         await sleep(wait * 1000);
       }
     }
   })();
   console.log("✅ Bot started! (@" + bot.botInfo.username + ")");
-  await notify("✅ AI Userbot အသင့်ဖြစ်ပြီ!", { reply_markup: { inline_keyboard: [[btn("🏠 Panel ဖွင့်", "home")]] } }).catch(() => {});
-  process.once("SIGINT", () => bot.stop("SIGINT"));
-  process.once("SIGTERM", () => bot.stop("SIGTERM"));
+  await notify("✅ AI Userbot အသင့်ဖြစ်ပြီ! (Telegram account တွေ နောက်ကွယ်မှာ ချိတ်နေသည်)", { reply_markup: { inline_keyboard: [[btn("🏠 Panel ဖွင့်", "home")]] } }).catch((e) => console.log("startup notify:", e.message));
+  process.once("SIGINT", () => shutdown("SIGINT"));
+  process.once("SIGTERM", () => shutdown("SIGTERM"));
+
+  // (၄) Userbot account တွေ — တခြား instance မရှိမှ (lock) ချိတ်၊ ပျက်လည် admin bot မထိ
+  (async () => {
+    try { await acquireLock(); } catch (e) { console.error("lock:", e.message); }
+    try { await initAllClients(); } catch (e) { console.error(`initAllClients: ${e.message}`); }
+    startHealthCheck();
+    startCatchup();
+    startGroupPoll();
+    startAutoChat();
+    const total = (await getAccounts().catch(() => [])).length;
+    console.log(`👤 Accounts ချိတ်ပြီး ${Object.keys(clientPool).length}/${total}`);
+    if (total) notify(`👤 Account ${Object.keys(clientPool).length}/${total} ချိတ်ပြီး`).catch(() => {});
+  })();
 }
 
 if (require.main === module) main().catch((e) => { console.error(e); process.exit(1); });
