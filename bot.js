@@ -1097,27 +1097,44 @@ async function main() {
   startCatchup();
   startGroupPoll();
   startAutoChat();
-  // 429 ရရင် Telegram ပေးတဲ့ retry_after စောင့်ပြီး ပြန်ကြိုးစား (မစောင့်ဘဲ crash ဖြစ်ရင် Render restart loop ဖြစ်နေလိမ့်မယ်)
-  for (let i = 0; i < 8; i++) {
-    try { await bot.telegram.deleteWebhook({ drop_pending_updates: true }); break; }
-    catch (err) {
-      const ra = err.response?.parameters?.retry_after;
-      if (err.response?.error_code === 429 && i < 7) { console.log(`⏳ deleteWebhook 429 — ${ra || 10}s စောင့်မယ်...`); await sleep(((ra || 10) + 1) * 1000); }
-      else throw err;
+  // deleteWebhook ကို rate-limit (429) ထိနေလို့ — webhook တကယ်ရှိမှသာ ဖျက်၊ မရှိရင် မခေါ်ဘူး
+  let needDelete = true;
+  try { needDelete = !!(await bot.telegram.getWebhookInfo()).url; } catch (_) {}
+  if (needDelete) {
+    for (let i = 0; i < 8; i++) {
+      try { await bot.telegram.deleteWebhook({ drop_pending_updates: true }); break; }
+      catch (err) {
+        const ra = err.response?.parameters?.retry_after;
+        if (err.response?.error_code === 429 && i < 7) { console.log(`⏳ deleteWebhook 429 — ${ra || 10}s စောင့်မယ်...`); await sleep(((ra || 10) + 1) * 1000); }
+        else throw err;
+      }
     }
   }
+  // စောင့်နေတဲ့ စာဟောင်းတွေ (/start အများကြီး) ကို ကျော်
+  try {
+    const u = await bot.telegram.callApi("getUpdates", { offset: -1, limit: 1, timeout: 0 });
+    if (u.length) await bot.telegram.callApi("getUpdates", { offset: u[0].update_id + 1, limit: 1, timeout: 0 });
+  } catch (e) { console.log("skip-pending:", e.message); }
 
-  let launched = false, retry = 0;
-  while (!launched) {
-    try {
-      await new Promise((resolve, reject) => { bot.launch({ dropPendingUpdates: true }, resolve).catch(reject); setTimeout(resolve, 8000); });
-      launched = true; console.log("✅ Bot started!");
-    } catch (err) {
-      if (err.response?.error_code === 429) { const ra = err.response?.parameters?.retry_after || 10; console.log(`⏳ launch 429 — ${ra}s စောင့်မယ်...`); await sleep((ra + 1) * 1000); continue; }
-      if (err.response?.error_code === 409) { retry++; console.log(`⚠️ 409 conflict — retry ${retry} in 5s...`); await sleep(5000); await bot.telegram.deleteWebhook({ drop_pending_updates: true }).catch(() => {}); }
-      else throw err;
-    }
+  // bot.launch() က deleteWebhook ကို ကိုယ်တိုင်ပြန်ခေါ်လို့ 429 ထပ်ရတယ် — polling ကို တိုက်ရိုက်စတင်
+  for (let i = 0; ; i++) {
+    try { bot.botInfo = await bot.telegram.getMe(); break; }
+    catch (err) { const ra = err.response?.parameters?.retry_after || 5; console.log(`getMe မအောင် (${err.message}) — ${ra}s နောက်ပြန်ကြိုးစား`); await sleep((ra + 1) * 1000); }
   }
+  (async () => {
+    let retry = 0;
+    for (;;) {
+      try { await bot.startPolling(); return; }
+      catch (err) {
+        const code = err.response?.error_code;
+        retry++;
+        const wait = code === 429 ? (err.response?.parameters?.retry_after || 10) + 1 : 5;
+        console.log(`⚠️ polling error ${code || ""} ${err.message} — retry ${retry} in ${wait}s...`);
+        await sleep(wait * 1000);
+      }
+    }
+  })();
+  console.log("✅ Bot started! (@" + bot.botInfo.username + ")");
   await notify("✅ AI Userbot အသင့်ဖြစ်ပြီ!", { reply_markup: { inline_keyboard: [[btn("🏠 Panel ဖွင့်", "home")]] } }).catch(() => {});
   process.once("SIGINT", () => bot.stop("SIGINT"));
   process.once("SIGTERM", () => bot.stop("SIGTERM"));
