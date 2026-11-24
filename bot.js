@@ -381,11 +381,19 @@ async function initAllClients() {
   for (const acc of await getAccounts()) {
     accCache[acc.name] = acc;
     if (clientPool[acc.name]) continue;
+    // session သေပြီးသား (SESSION_REVOKED စသည်) ဆိုရင် ထပ်မချိတ်ဘဲ ကျော် — session အသစ်ထည့်မှ ပြန်ကြိုးစား
+    if (acc.deadSession && acc.deadSession === acc.sessionString) { console.log(`⏭ Skip: ${acc.name} — session သေနေသည် (session အသစ်လိုသည်)`); continue; }
     try {
       clientPool[acc.name] = await buildClient(acc.sessionString, acc.name);
       console.log(`✅ Connected: ${acc.name}`);
       buildMonitor(acc.name).catch(() => {});
-    } catch (e) { console.error(`❌ Failed: ${acc.name} — ${e.message}`); }
+    } catch (e) {
+      console.error(`❌ Failed: ${acc.name} — ${e.message}`);
+      if (DEAD_SESSION_ERR.test(e.message || "")) {
+        await saveAccount(acc.name, { deadSession: acc.sessionString, deadReason: e.message }).catch(() => {});
+        notify(`🔑 [${acc.name}] Session သုံးမရတော့ပါ (${e.message})\nTelegram ဘက်က logout/revoke လုပ်ထားတာဖြစ်နိုင်သည်။ \`node get-session.js\` နဲ့ session အသစ်ထုတ်ပြီး ➕ Account ကနေ ပြန်ထည့်ပါ။`).catch(() => {});
+      }
+    }
   }
 }
 async function reconnectAccount(acc) {
@@ -417,6 +425,7 @@ function startHealthCheck() {
 }
 
 // ─── CHAT ENGINE ──────────────────────────────────────────────────────────────
+const DEAD_SESSION_ERR = /SESSION_REVOKED|AUTH_KEY_UNREGISTERED|AUTH_KEY_DUPLICATED|USER_DEACTIVATED|SESSION_EXPIRED/;
 const PERMANENT_ERR = /USER_BANNED_IN_CHANNEL|CHAT_WRITE_FORBIDDEN|CHANNEL_PRIVATE|USER_KICKED|CHAT_SEND_PLAIN_FORBIDDEN|CHAT_RESTRICTED|CHAT_GUEST_SEND_FORBIDDEN|USER_NOT_PARTICIPANT/;
 const chatState = (accName, chatId) => (chats[`${accName}|${chatId}`] ||= { buf: [], lastOwn: 0, sent: [], pending: null, fails: 0, busyUntil: 0, ownMsgIds: new Set(), blockedUntil: 0, dmQueue: Promise.resolve(), handled: new Set() });
 const displayName = (s) => (s ? ([s.firstName, s.lastName].filter(Boolean).join(" ") || s.title || s.username || "user") : "user");
@@ -688,7 +697,16 @@ function startGroupPoll() {
             const last = pollLast[key];
             pollLast[key] = Math.max(last, list[list.length - 1].id);
             for (const m of list) { if (m.id > last && !m.out) await onMessage(name, { message: m, _catchup: true }); }
-          } catch (e) { console.log(`poll[${name}]: ${short(mon.title, 20)} — ${e.message}`); }
+          } catch (e) {
+            console.log(`poll[${name}]: ${short(mon.title, 20)} — ${e.message}`);
+            // GP ကို ထွက်ခံရ/private ဖြစ်သွားရင် ထပ်မ poll တော့ဘဲ blocked ထဲထည့် (log spam မဖြစ်အောင်)
+            if (PERMANENT_ERR.test(e.message || "")) {
+              try {
+                await saveAccount(name, { blocked: [...new Set([...(acc.blocked || []), mon.link])] });
+                if (S.notifyOn) notify(`🚫 [${name}] ${short(mon.title, 30)} — ${e.message}\nဒီ GP ကို ရပ်ထားလိုက်ပြီ (Account မှာ ♻️ ပြန်ဖွင့်လို့ရ)`).catch(() => {});
+              } catch (_) {}
+            }
+          }
           await sleep(300);
         }
       }
@@ -1079,7 +1097,15 @@ async function main() {
   startCatchup();
   startGroupPoll();
   startAutoChat();
-  await bot.telegram.deleteWebhook({ drop_pending_updates: true });
+  // 429 ရရင် Telegram ပေးတဲ့ retry_after စောင့်ပြီး ပြန်ကြိုးစား (မစောင့်ဘဲ crash ဖြစ်ရင် Render restart loop ဖြစ်နေလိမ့်မယ်)
+  for (let i = 0; i < 8; i++) {
+    try { await bot.telegram.deleteWebhook({ drop_pending_updates: true }); break; }
+    catch (err) {
+      const ra = err.response?.parameters?.retry_after;
+      if (err.response?.error_code === 429 && i < 7) { console.log(`⏳ deleteWebhook 429 — ${ra || 10}s စောင့်မယ်...`); await sleep(((ra || 10) + 1) * 1000); }
+      else throw err;
+    }
+  }
 
   let launched = false, retry = 0;
   while (!launched) {
@@ -1087,6 +1113,7 @@ async function main() {
       await new Promise((resolve, reject) => { bot.launch({ dropPendingUpdates: true }, resolve).catch(reject); setTimeout(resolve, 8000); });
       launched = true; console.log("✅ Bot started!");
     } catch (err) {
+      if (err.response?.error_code === 429) { const ra = err.response?.parameters?.retry_after || 10; console.log(`⏳ launch 429 — ${ra}s စောင့်မယ်...`); await sleep((ra + 1) * 1000); continue; }
       if (err.response?.error_code === 409) { retry++; console.log(`⚠️ 409 conflict — retry ${retry} in 5s...`); await sleep(5000); await bot.telegram.deleteWebhook({ drop_pending_updates: true }).catch(() => {}); }
       else throw err;
     }
